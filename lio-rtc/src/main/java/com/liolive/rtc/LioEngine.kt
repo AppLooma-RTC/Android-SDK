@@ -95,8 +95,8 @@ class LioEngine private constructor(
         scope.launch {
             room.localParticipant.publishData(
                 data,
-                if (reliable) io.livekit.android.room.participant.DataPublishReliability.RELIABLE
-                else io.livekit.android.room.participant.DataPublishReliability.LOSSY
+                if (reliable) io.livekit.android.room.track.DataPublishReliability.RELIABLE
+                else io.livekit.android.room.track.DataPublishReliability.LOSSY
             )
         }
     }
