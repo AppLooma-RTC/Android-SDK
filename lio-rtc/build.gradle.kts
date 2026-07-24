@@ -41,7 +41,7 @@ publishing {
             pom {
                 name.set("Lio Live RTC Android SDK")
                 description.set("Real-time voice, video, live streaming and audio rooms by AppLooma LLC")
-                url.set("https://docs.liolive.com")
+                url.set("https://applooma.dev/dashboard/docs")
             }
         }
     }

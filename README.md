@@ -23,7 +23,7 @@ val engine = LioEngine.create(context, "YOUR_APP_ID", object : LioEventHandler()
 })
 
 // Get { token, wsUrl } from YOUR server, which calls
-// POST https://api.liolive.com/v1/token with your API key/secret.
+// POST https://api.applooma.dev/v1/token with your API key/secret.
 lifecycleScope.launch {
     engine.joinChannel(token, wsUrl, LioJoinOptions(role = LioRole.HOST, camera = true))
 }
@@ -52,4 +52,4 @@ engine.destroy()
 
 `HOST` (admin + publish) · `COHOST` (publish) · `AUDIENCE` (view only — live streaming viewers)
 
-Docs: https://docs.liolive.com
+Docs: https://applooma.dev/dashboard/docs

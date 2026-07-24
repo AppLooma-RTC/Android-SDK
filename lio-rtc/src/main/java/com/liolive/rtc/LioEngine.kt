@@ -44,7 +44,7 @@ class LioEngine private constructor(
         private set
 
     companion object {
-        /** Create an engine instance with your Lio Live App ID (console.liolive.com). */
+        /** Create an engine instance with your Lio Live App ID (applooma.dev/dashboard). */
         @JvmStatic
         @JvmOverloads
         fun create(context: Context, appId: String, eventHandler: LioEventHandler? = null): LioEngine {
@@ -55,7 +55,7 @@ class LioEngine private constructor(
 
     /**
      * Join a channel with a token from your server
-     * (POST https://api.liolive.com/v1/token → { token, wsUrl }).
+     * (POST https://api.applooma.dev/v1/token → { token, wsUrl }).
      */
     suspend fun joinChannel(token: String, wsUrl: String, options: LioJoinOptions = LioJoinOptions()) {
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
