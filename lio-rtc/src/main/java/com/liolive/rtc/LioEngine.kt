@@ -134,6 +134,7 @@ class LioEngine private constructor(
                     is RoomEvent.DataReceived -> {
                         val from = (event.participant as? RemoteParticipant)?.let { userFor(it) }
                         eventHandler?.onDataReceived(event.data, from)
+                        LioGiftEvent.tryParse(event.data)?.let { eventHandler?.onGiftReceived(it) }
                     }
                     is RoomEvent.ActiveSpeakersChanged ->
                         eventHandler?.onActiveSpeakersChanged(

@@ -40,6 +40,40 @@ abstract class LioEventHandler {
     open fun onTrackSubscribed(user: LioRemoteUser) {}
     open fun onDisconnected(reason: String?) {}
     open fun onDataReceived(data: ByteArray, from: LioRemoteUser?) {}
+    open fun onGiftReceived(gift: LioGiftEvent) {}
     open fun onActiveSpeakersChanged(uids: List<String>) {}
     open fun onError(error: Throwable) {}
+}
+
+/** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */
+data class LioGiftEvent(
+    val txId: String,
+    val giftId: String,
+    val giftName: String,
+    val imageUrl: String,
+    val coinPrice: Int,
+    val sender: String,
+    val receiver: String,
+    val quantity: Int,
+) {
+    companion object {
+        /** Parses a data-channel payload; returns null if it isn't a lio.gift event. */
+        @JvmStatic
+        fun tryParse(data: ByteArray): LioGiftEvent? = try {
+            val json = org.json.JSONObject(String(data, Charsets.UTF_8))
+            if (json.optString("type") != "lio.gift") null else {
+                val gift = json.getJSONObject("gift")
+                LioGiftEvent(
+                    txId = json.getString("txId"),
+                    giftId = gift.getString("id"),
+                    giftName = gift.getString("name"),
+                    imageUrl = gift.getString("imageUrl"),
+                    coinPrice = gift.optInt("coinPrice", 0),
+                    sender = json.getString("sender"),
+                    receiver = json.getString("receiver"),
+                    quantity = json.optInt("quantity", 1),
+                )
+            }
+        } catch (_: Exception) { null }
+    }
 }
