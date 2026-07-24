@@ -1,4 +1,4 @@
-package com.liolive.rtc
+package com.applooma.rtc
 
 import android.content.Context
 import io.livekit.android.LiveKit
@@ -14,42 +14,42 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
- * Lio Live Android SDK — main entry point.
+ * AppLooma RTC Android SDK — main entry point.
  * © AppLooma LLC
  *
  * Kotlin:
  * ```kotlin
- * val engine = LioEngine.create(context, "YOUR_APP_ID", eventHandler)
- * engine.joinChannel(token, wsUrl, LioJoinOptions(role = LioRole.HOST, camera = true))
+ * val engine = AppEngine.create(context, "YOUR_APP_ID", eventHandler)
+ * engine.joinChannel(token, wsUrl, AppJoinOptions(role = AppRole.HOST, camera = true))
  * ```
  *
  * Java:
  * ```java
- * LioEngine engine = LioEngine.create(context, "YOUR_APP_ID", handler);
+ * AppEngine engine = AppEngine.create(context, "YOUR_APP_ID", handler);
  * engine.joinChannelAsync(token, wsUrl, options);
  * ```
  */
-class LioEngine private constructor(
+class AppEngine private constructor(
     context: Context,
     val appId: String,
-    private val eventHandler: LioEventHandler?,
+    private val eventHandler: AppEventHandler?,
 ) {
     private val room: Room = LiveKit.create(context.applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var eventsJob: Job? = null
-    private val users = LinkedHashMap<String, LioRemoteUser>()
+    private val users = LinkedHashMap<String, AppRemoteUser>()
 
     @Volatile
     var isJoined: Boolean = false
         private set
 
     companion object {
-        /** Create an engine instance with your Lio Live App ID (applooma.dev/dashboard). */
+        /** Create an engine instance with your AppLooma RTC App ID (applooma.dev/dashboard). */
         @JvmStatic
         @JvmOverloads
-        fun create(context: Context, appId: String, eventHandler: LioEventHandler? = null): LioEngine {
-            require(appId.isNotBlank()) { "LioEngine.create: appId is required" }
-            return LioEngine(context, appId, eventHandler)
+        fun create(context: Context, appId: String, eventHandler: AppEventHandler? = null): AppEngine {
+            require(appId.isNotBlank()) { "AppEngine.create: appId is required" }
+            return AppEngine(context, appId, eventHandler)
         }
     }
 
@@ -57,19 +57,19 @@ class LioEngine private constructor(
      * Join a channel with a token from your server
      * (POST https://api.applooma.dev/v1/token → { token, wsUrl }).
      */
-    suspend fun joinChannel(token: String, wsUrl: String, options: LioJoinOptions = LioJoinOptions()) {
+    suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
         subscribeEvents()
         room.connect(wsUrl, token)
         isJoined = true
-        if (options.role != LioRole.AUDIENCE) {
+        if (options.role != AppRole.AUDIENCE) {
             if (options.microphone) room.localParticipant.setMicrophoneEnabled(true)
             if (options.camera) room.localParticipant.setCameraEnabled(true)
         }
     }
 
     /** Java-friendly fire-and-forget variant. */
-    fun joinChannelAsync(token: String, wsUrl: String, options: LioJoinOptions = LioJoinOptions()) {
+    fun joinChannelAsync(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         scope.launch {
             try {
                 joinChannel(token, wsUrl, options)
@@ -104,13 +104,13 @@ class LioEngine private constructor(
     // ---- State ----
     val localUid: String get() = room.localParticipant.identity?.value ?: ""
     val channelName: String get() = room.name ?: ""
-    val remoteUsers: List<LioRemoteUser> get() = users.values.toList()
+    val remoteUsers: List<AppRemoteUser> get() = users.values.toList()
 
     /** internal — escape hatch for UIKits */
     val raw: Room get() = room
 
-    private fun userFor(p: RemoteParticipant): LioRemoteUser =
-        users.getOrPut(p.identity?.value ?: "") { LioRemoteUser(p) }
+    private fun userFor(p: RemoteParticipant): AppRemoteUser =
+        users.getOrPut(p.identity?.value ?: "") { AppRemoteUser(p) }
 
     private fun subscribeEvents() {
         eventsJob?.cancel()
@@ -134,7 +134,7 @@ class LioEngine private constructor(
                     is RoomEvent.DataReceived -> {
                         val from = (event.participant as? RemoteParticipant)?.let { userFor(it) }
                         eventHandler?.onDataReceived(event.data, from)
-                        LioGiftEvent.tryParse(event.data)?.let { eventHandler?.onGiftReceived(it) }
+                        AppGiftEvent.tryParse(event.data)?.let { eventHandler?.onGiftReceived(it) }
                     }
                     is RoomEvent.ActiveSpeakersChanged ->
                         eventHandler?.onActiveSpeakersChanged(

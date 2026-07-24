@@ -1,14 +1,14 @@
-package com.liolive.rtc
+package com.applooma.rtc
 
 import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.room.track.VideoTrack
 
-/** Roles supported by Lio Live channels. */
-enum class LioRole { HOST, COHOST, AUDIENCE }
+/** Roles supported by AppLooma RTC channels. */
+enum class AppRole { HOST, COHOST, AUDIENCE }
 
 /** Options for joining a channel. */
-data class LioJoinOptions @JvmOverloads constructor(
-    val role: LioRole = LioRole.HOST,
+data class AppJoinOptions @JvmOverloads constructor(
+    val role: AppRole = AppRole.HOST,
     /** Auto-enable camera on join (ignored for audience). */
     val camera: Boolean = false,
     /** Auto-enable microphone on join (ignored for audience). */
@@ -16,7 +16,7 @@ data class LioJoinOptions @JvmOverloads constructor(
 )
 
 /** A remote user in the channel. */
-class LioRemoteUser internal constructor(private val p: RemoteParticipant) {
+class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
     val uid: String get() = p.identity?.value ?: ""
     val displayName: String? get() = p.name
     val metadata: String? get() = p.metadata
@@ -34,19 +34,19 @@ class LioRemoteUser internal constructor(private val p: RemoteParticipant) {
  * Channel event callbacks. Override only what you need.
  * All callbacks are delivered on the main thread.
  */
-abstract class LioEventHandler {
-    open fun onUserJoined(user: LioRemoteUser) {}
-    open fun onUserLeft(user: LioRemoteUser) {}
-    open fun onTrackSubscribed(user: LioRemoteUser) {}
+abstract class AppEventHandler {
+    open fun onUserJoined(user: AppRemoteUser) {}
+    open fun onUserLeft(user: AppRemoteUser) {}
+    open fun onTrackSubscribed(user: AppRemoteUser) {}
     open fun onDisconnected(reason: String?) {}
-    open fun onDataReceived(data: ByteArray, from: LioRemoteUser?) {}
-    open fun onGiftReceived(gift: LioGiftEvent) {}
+    open fun onDataReceived(data: ByteArray, from: AppRemoteUser?) {}
+    open fun onGiftReceived(gift: AppGiftEvent) {}
     open fun onActiveSpeakersChanged(uids: List<String>) {}
     open fun onError(error: Throwable) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */
-data class LioGiftEvent(
+data class AppGiftEvent(
     val txId: String,
     val giftId: String,
     val giftName: String,
@@ -59,11 +59,11 @@ data class LioGiftEvent(
     companion object {
         /** Parses a data-channel payload; returns null if it isn't a lio.gift event. */
         @JvmStatic
-        fun tryParse(data: ByteArray): LioGiftEvent? = try {
+        fun tryParse(data: ByteArray): AppGiftEvent? = try {
             val json = org.json.JSONObject(String(data, Charsets.UTF_8))
             if (json.optString("type") != "lio.gift") null else {
                 val gift = json.getJSONObject("gift")
-                LioGiftEvent(
+                AppGiftEvent(
                     txId = json.getString("txId"),
                     giftId = gift.getString("id"),
                     giftName = gift.getString("name"),

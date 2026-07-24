@@ -4,11 +4,11 @@ plugins {
     id("maven-publish")
 }
 
-group = "com.liolive"
+group = "com.applooma"
 version = "0.1.0"
 
 android {
-    namespace = "com.liolive.rtc"
+    namespace = "com.applooma.rtc"
     compileSdk = 34
 
     defaultConfig {
@@ -34,12 +34,12 @@ dependencies {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "com.liolive"
+            groupId = "com.applooma"
             artifactId = "rtc-android"
             version = project.version.toString()
             afterEvaluate { from(components["release"]) }
             pom {
-                name.set("Lio Live RTC Android SDK")
+                name.set("AppLooma RTC RTC Android SDK")
                 description.set("Real-time voice, video, live streaming and audio rooms by AppLooma LLC")
                 url.set("https://applooma.dev/dashboard/docs")
             }

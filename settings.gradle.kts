@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "lio-rtc-android"
-include(":lio-rtc")
+rootProject.name = "applooma-rtc-android"
+include(":applooma-rtc")

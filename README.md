@@ -1,4 +1,4 @@
-# Lio Live Android SDK (`com.liolive:rtc-android`)
+# AppLooma RTC Android SDK (`com.applooma:rtc-android`)
 
 Real-time voice, video, live streaming and audio rooms by AppLooma LLC. Kotlin-first with a Java-friendly API.
 
@@ -6,7 +6,7 @@ Real-time voice, video, live streaming and audio rooms by AppLooma LLC. Kotlin-f
 
 ```gradle
 dependencies {
-    implementation("com.liolive:rtc-android:0.1.0")
+    implementation("com.applooma:rtc-android:0.1.0")
 }
 ```
 
@@ -15,9 +15,9 @@ Permissions (`CAMERA`, `RECORD_AUDIO`) are declared by the SDK manifest; request
 ## Quickstart (Kotlin)
 
 ```kotlin
-val engine = LioEngine.create(context, "YOUR_APP_ID", object : LioEventHandler() {
-    override fun onUserJoined(user: LioRemoteUser) { /* add tile */ }
-    override fun onTrackSubscribed(user: LioRemoteUser) {
+val engine = AppEngine.create(context, "YOUR_APP_ID", object : AppEventHandler() {
+    override fun onUserJoined(user: AppRemoteUser) { /* add tile */ }
+    override fun onTrackSubscribed(user: AppRemoteUser) {
         user.videoTrack?.let { renderer.setTrack(it) }
     }
 })
@@ -25,17 +25,17 @@ val engine = LioEngine.create(context, "YOUR_APP_ID", object : LioEventHandler()
 // Get { token, wsUrl } from YOUR server, which calls
 // POST https://api.applooma.dev/v1/token with your API key/secret.
 lifecycleScope.launch {
-    engine.joinChannel(token, wsUrl, LioJoinOptions(role = LioRole.HOST, camera = true))
+    engine.joinChannel(token, wsUrl, AppJoinOptions(role = AppRole.HOST, camera = true))
 }
 ```
 
 ## Quickstart (Java)
 
 ```java
-LioEngine engine = LioEngine.create(context, "YOUR_APP_ID", new LioEventHandler() {
-    @Override public void onUserJoined(LioRemoteUser user) { }
+AppEngine engine = AppEngine.create(context, "YOUR_APP_ID", new AppEventHandler() {
+    @Override public void onUserJoined(AppRemoteUser user) { }
 });
-engine.joinChannelAsync(token, wsUrl, new LioJoinOptions(LioRole.HOST, true, true));
+engine.joinChannelAsync(token, wsUrl, new AppJoinOptions(AppRole.HOST, true, true));
 ```
 
 ## Controls
