@@ -6,7 +6,7 @@ Real-time voice, video, live streaming and audio rooms by AppLooma LLC. Kotlin-f
 
 ```gradle
 dependencies {
-    implementation("com.applooma:rtc-android:0.1.0")
+    implementation("com.applooma:rtc-android:0.2.0")
 }
 ```
 
@@ -18,7 +18,7 @@ Permissions (`CAMERA`, `RECORD_AUDIO`) are declared by the SDK manifest; request
 val engine = AppEngine.create(context, "YOUR_APP_ID", object : AppEventHandler() {
     override fun onUserJoined(user: AppRemoteUser) { /* add tile */ }
     override fun onTrackSubscribed(user: AppRemoteUser) {
-        user.videoTrack?.let { renderer.setTrack(it) }
+        videoTile.attach(engine, user)   // AppVideoView
     }
 })
 
