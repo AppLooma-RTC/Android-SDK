@@ -39,7 +39,7 @@ publishing {
             version = project.version.toString()
             afterEvaluate { from(components["release"]) }
             pom {
-                name.set("AppLooma RTC RTC Android SDK")
+                name.set("AppLooma RTC Android SDK")
                 description.set("Real-time voice, video, live streaming and audio rooms by AppLooma LLC")
                 url.set("https://applooma.dev/dashboard/docs")
             }
