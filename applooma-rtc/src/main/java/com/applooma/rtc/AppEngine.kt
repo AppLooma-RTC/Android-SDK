@@ -62,6 +62,12 @@ class AppEngine private constructor(
         subscribeEvents()
         room.connect(wsUrl, token)
         isJoined = true
+
+        // Participants already in the room when we join never produce a
+        // ParticipantConnected event; without this an audience member joining a
+        // live stream sees nobody and never receives the host's video.
+        seedExistingParticipants()
+
         if (options.role != AppRole.AUDIENCE) {
             if (options.microphone) room.localParticipant.setMicrophoneEnabled(true)
             if (options.camera) room.localParticipant.setCameraEnabled(true)
@@ -86,18 +92,40 @@ class AppEngine private constructor(
         eventsJob?.cancel()
     }
 
+    /** Announces everyone already present, and their already-published tracks. */
+    private fun seedExistingParticipants() {
+        room.remoteParticipants.values.forEach { p ->
+            val user = userFor(p)
+            eventHandler?.onUserJoined(user)
+            if (p.trackPublications.values.any { it.track != null }) {
+                eventHandler?.onTrackSubscribed(user)
+            }
+        }
+    }
+
     // ---- Local media controls ----
-    fun enableCamera(on: Boolean) { scope.launch { room.localParticipant.setCameraEnabled(on) } }
-    fun enableMicrophone(on: Boolean) { scope.launch { room.localParticipant.setMicrophoneEnabled(on) } }
+    // These are fire-and-forget for Java callers, so a failure (missing CAMERA
+    // permission, publish rejected) must be reported rather than thrown from a
+    // coroutine, where it would crash the host application.
+    fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on) }
+    fun enableMicrophone(on: Boolean) = launchSafely { room.localParticipant.setMicrophoneEnabled(on) }
 
     /** Broadcast data to the channel (chat, signals, gifts). */
-    fun sendData(data: ByteArray, reliable: Boolean = true) {
+    fun sendData(data: ByteArray, reliable: Boolean = true) = launchSafely {
+        room.localParticipant.publishData(
+            data,
+            if (reliable) io.livekit.android.room.track.DataPublishReliability.RELIABLE
+            else io.livekit.android.room.track.DataPublishReliability.LOSSY
+        )
+    }
+
+    private fun launchSafely(block: suspend () -> Unit) {
         scope.launch {
-            room.localParticipant.publishData(
-                data,
-                if (reliable) io.livekit.android.room.track.DataPublishReliability.RELIABLE
-                else io.livekit.android.room.track.DataPublishReliability.LOSSY
-            )
+            try {
+                block()
+            } catch (t: Throwable) {
+                eventHandler?.onError(t)
+            }
         }
     }
 
@@ -129,7 +157,15 @@ class AppEngine private constructor(
                         }
                     is RoomEvent.Disconnected -> {
                         isJoined = false
+                        // Report everyone as gone; a stale roster after a
+                        // disconnect made remoteUsers wrong until the next join.
+                        users.values.forEach { eventHandler?.onUserLeft(it) }
+                        users.clear()
                         eventHandler?.onDisconnected(event.reason?.name)
+                    }
+                    is RoomEvent.Reconnected -> {
+                        users.clear()
+                        seedExistingParticipants()
                     }
                     is RoomEvent.DataReceived -> {
                         val from = (event.participant as? RemoteParticipant)?.let { userFor(it) }
