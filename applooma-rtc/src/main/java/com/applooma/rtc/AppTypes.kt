@@ -57,11 +57,11 @@ data class AppGiftEvent(
     val quantity: Int,
 ) {
     companion object {
-        /** Parses a data-channel payload; returns null if it isn't a lio.gift event. */
+        /** Parses a data-channel payload; returns null if it isn't a applooma.gift event. */
         @JvmStatic
         fun tryParse(data: ByteArray): AppGiftEvent? = try {
             val json = org.json.JSONObject(String(data, Charsets.UTF_8))
-            if (json.optString("type") != "lio.gift") null else {
+            if (json.optString("type") != "applooma.gift") null else {
                 val gift = json.getJSONObject("gift")
                 AppGiftEvent(
                     txId = json.getString("txId"),
