@@ -4,6 +4,7 @@ import android.content.Context
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.RemoteParticipant
+import io.livekit.android.room.track.VideoTrack
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import kotlinx.coroutines.CoroutineScope
@@ -134,8 +135,18 @@ class AppEngine private constructor(
     val channelName: String get() = room.name ?: ""
     val remoteUsers: List<AppRemoteUser> get() = users.values.toList()
 
-    /** internal — escape hatch for UIKits */
-    val raw: Room get() = room
+    // Internal: AppVideoView needs the room to initialise a renderer, and the
+    // local camera track to draw a preview. Neither belongs in the public API.
+    internal val raw: Room get() = room
+
+    internal val localVideoTrack: VideoTrack?
+        get() = room.localParticipant.videoTrackPublications
+            .firstNotNullOfOrNull { it.second as? VideoTrack }
+
+    /** Prepares a renderer view to receive frames. Used by [AppVideoView]. */
+    internal fun initRenderer(view: io.livekit.android.renderer.TextureViewRenderer) {
+        room.initVideoRenderer(view)
+    }
 
     private fun userFor(p: RemoteParticipant): AppRemoteUser =
         users.getOrPut(p.identity?.value ?: "") { AppRemoteUser(p) }

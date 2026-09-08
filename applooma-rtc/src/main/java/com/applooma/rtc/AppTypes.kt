@@ -22,12 +22,21 @@ class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
     val metadata: String? get() = p.metadata
     val isSpeaking: Boolean get() = p.isSpeaking
 
-    /** First available video track for rendering (attach to a video renderer view). */
-    val videoTrack: VideoTrack?
+    /**
+     * Whether this participant is currently publishing a camera.
+     *
+     * A participant is announced before their track arrives, so this is false
+     * for a moment after they join.
+     */
+    val hasVideo: Boolean get() = videoTrack != null
+
+    // Internal: rendering goes through AppVideoView, which needs these. Keeping
+    // them out of the public API keeps the transport layer's types off a
+    // consumer's compile classpath.
+    internal val videoTrack: VideoTrack?
         get() = p.videoTrackPublications.firstNotNullOfOrNull { it.second as? VideoTrack }
 
-    /** internal */
-    val raw: RemoteParticipant get() = p
+    internal val raw: RemoteParticipant get() = p
 }
 
 /**

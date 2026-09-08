@@ -2,10 +2,11 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("maven-publish")
+    id("signing")
 }
 
 group = "com.applooma"
-version = "0.1.0"
+version = "0.2.0"
 
 android {
     namespace = "com.applooma.rtc"
@@ -22,12 +23,19 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
-    publishing { singleVariant("release") }
+    publishing {
+        singleVariant("release") {
+            // Maven Central requires sources and javadoc alongside the artifact.
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
 }
 
 dependencies {
-    // Media engine (internal implementation detail)
-    api("io.livekit:livekit-android:2.12.0")
+    // implementation, not api: the transport layer is an internal detail and
+    // must not leak onto a consumer's compile classpath.
+    implementation("com.applooma:rtc-core-android:2.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
 
@@ -40,9 +48,41 @@ publishing {
             afterEvaluate { from(components["release"]) }
             pom {
                 name.set("AppLooma RTC Android SDK")
-                description.set("Real-time voice, video, live streaming and audio rooms by AppLooma LLC")
-                url.set("https://applooma.dev/dashboard/docs")
+                description.set("Real-time voice, video, live streaming and audio rooms for Android")
+                url.set("https://docs.applooma.dev/sdk/android")
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://opensource.org/licenses/MIT")
+                    }
+                }
+                developers {
+                    developer {
+                        id.set("applooma")
+                        name.set("AppLooma LLC")
+                        email.set("support@applooma.dev")
+                    }
+                }
+                scm {
+                    url.set("https://github.com/apploomadev/Android-SDK")
+                    connection.set("scm:git:git://github.com/apploomadev/Android-SDK.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/apploomadev/Android-SDK.git")
+                }
             }
         }
+    }
+}
+
+// Maven Central rejects unsigned artifacts. The key is supplied in CI through
+// environment variables so it never lives in the repository; locally, an unset
+// key simply skips signing so a normal build still works.
+signing {
+    val signingKey = System.getenv("SIGNING_KEY")
+    val signingPassphrase = System.getenv("SIGNING_PASSPHRASE")
+    if (!signingKey.isNullOrBlank()) {
+        useInMemoryPgpKeys(signingKey, signingPassphrase)
+        sign(publishing.publications)
+    } else {
+        logger.lifecycle("SIGNING_KEY is not set - artifacts will not be signed")
     }
 }
