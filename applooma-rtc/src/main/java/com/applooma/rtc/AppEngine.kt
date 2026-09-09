@@ -13,6 +13,39 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
+
+/** Our own frames travel on the same channel as customer data, tagged so the two never mix. */
+private const val MESSAGE_TYPE = "applooma.message"
+private const val GIFT_TYPE = "applooma.gift"
+
+private val messageCounter = AtomicLong(0)
+
+private fun newMessageId(): String =
+    "m_${System.currentTimeMillis().toString(36)}_${messageCounter.incrementAndGet().toString(36)}"
+
+private fun isoInstant(date: Date): String =
+    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        .apply { timeZone = TimeZone.getTimeZone("UTC") }
+        .format(date)
+
+private fun parseMessage(frame: JSONObject, from: AppRemoteUser?): AppMessage {
+    val payload = frame.optJSONObject("data")
+    return AppMessage(
+        id = frame.optString("id").ifEmpty { newMessageId() },
+        text = if (frame.has("text")) frame.optString("text") else null,
+        data = payload?.let { obj ->
+            obj.keys().asSequence().associateWith { obj.opt(it) }
+        },
+        from = from,
+        sentAt = Date(),
+    )
+}
 
 /**
  * AppLooma RTC Android SDK — main entry point.
@@ -112,6 +145,36 @@ class AppEngine private constructor(
     fun enableMicrophone(on: Boolean) = launchSafely { room.localParticipant.setMicrophoneEnabled(on) }
 
     /** Broadcast data to the channel (chat, signals, gifts). */
+    /**
+     * Send a message to everyone in the channel.
+     *
+     * An audience member can call this even though they cannot publish video —
+     * which is what makes live comments on a broadcast work.
+     *
+     * Nothing is stored, so a message reaches whoever is present when it is sent.
+     * Returns immediately; the message is delivered on a background coroutine.
+     */
+    @JvmOverloads
+    fun sendMessage(
+        text: String? = null,
+        data: Map<String, Any?>? = null,
+        reliable: Boolean = true,
+    ): AppMessage {
+        require(text != null || data != null) { "sendMessage needs text or data" }
+        val message = AppMessage(id = newMessageId(), text = text, data = data)
+        val frame = JSONObject().apply {
+            put("type", MESSAGE_TYPE)
+            put("id", message.id)
+            text?.let { put("text", it) }
+            data?.let { put("data", JSONObject(it)) }
+            put("sentAt", isoInstant(message.sentAt))
+        }
+        sendData(frame.toString().toByteArray(Charsets.UTF_8), reliable)
+        return message
+    }
+
+    /** Broadcast raw bytes. Prefer sendMessage() unless you need your own format. */
+    @JvmOverloads
     fun sendData(data: ByteArray, reliable: Boolean = true) = launchSafely {
         room.localParticipant.publishData(
             data,
@@ -135,6 +198,15 @@ class AppEngine private constructor(
     val channelName: String get() = room.name ?: ""
     val remoteUsers: List<AppRemoteUser> get() = users.values.toList()
 
+    /** Everyone watching without publishing. The live audience of a broadcast. */
+    val audience: List<AppRemoteUser> get() = users.values.filter { !it.isPublisher }
+
+    /** How many people are watching. */
+    val audienceCount: Int get() = users.values.count { !it.isPublisher }
+
+    /** Everyone on stage: the host and any co-hosts, excluding you. */
+    val hosts: List<AppRemoteUser> get() = users.values.filter { it.isPublisher }
+
     // Internal: AppVideoView needs the room to initialise a renderer, and the
     // local camera track to draw a preview. Neither belongs in the public API.
     internal val raw: Room get() = room
@@ -156,12 +228,19 @@ class AppEngine private constructor(
         eventsJob = scope.launch {
             room.events.collect { event ->
                 when (event) {
-                    is RoomEvent.ParticipantConnected ->
+                    is RoomEvent.ParticipantConnected -> {
                         eventHandler?.onUserJoined(userFor(event.participant))
+                        eventHandler?.onAudienceChanged(audience)
+                    }
                     is RoomEvent.ParticipantDisconnected -> {
                         val u = users.remove(event.participant.identity?.value)
                         if (u != null) eventHandler?.onUserLeft(u)
+                        eventHandler?.onAudienceChanged(audience)
                     }
+                    // A promotion or demotion rewrites the token metadata, which
+                    // is how someone moves between the stage and the audience.
+                    is RoomEvent.ParticipantMetadataChanged ->
+                        eventHandler?.onAudienceChanged(audience)
                     is RoomEvent.TrackSubscribed ->
                         (event.participant as? RemoteParticipant)?.let {
                             eventHandler?.onTrackSubscribed(userFor(it))
@@ -180,8 +259,23 @@ class AppEngine private constructor(
                     }
                     is RoomEvent.DataReceived -> {
                         val from = (event.participant as? RemoteParticipant)?.let { userFor(it) }
-                        eventHandler?.onDataReceived(event.data, from)
-                        AppGiftEvent.tryParse(event.data)?.let { eventHandler?.onGiftReceived(it) }
+
+                        // Each frame is either ours or the customer's, never both.
+                        // Reporting our own envelopes as raw data as well would
+                        // deliver every comment twice to anyone handling both.
+                        val frame = try {
+                            JSONObject(String(event.data, Charsets.UTF_8))
+                        } catch (_: Exception) {
+                            null
+                        }
+
+                        when (frame?.optString("type")) {
+                            MESSAGE_TYPE -> eventHandler?.onMessage(parseMessage(frame, from))
+                            GIFT_TYPE ->
+                                AppGiftEvent.tryParse(event.data)
+                                    ?.let { eventHandler?.onGiftReceived(it) }
+                            else -> eventHandler?.onDataReceived(event.data, from)
+                        }
                     }
                     is RoomEvent.ActiveSpeakersChanged ->
                         eventHandler?.onActiveSpeakersChanged(
