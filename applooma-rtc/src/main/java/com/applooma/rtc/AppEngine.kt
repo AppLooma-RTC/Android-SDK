@@ -2,6 +2,12 @@ package com.applooma.rtc
 
 import android.content.Context
 import io.livekit.android.LiveKit
+import io.livekit.android.RoomOptions
+import io.livekit.android.room.participant.AudioTrackPublishDefaults
+import io.livekit.android.room.track.LocalAudioTrackOptions
+import io.livekit.android.room.track.LocalVideoTrackOptions
+import io.livekit.android.room.track.VideoPreset169
+import io.livekit.android.room.participant.VideoTrackPublishDefaults
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.room.track.VideoTrack
@@ -68,7 +74,7 @@ class AppEngine private constructor(
     val appId: String,
     private val eventHandler: AppEventHandler?,
 ) {
-    private val room: Room = LiveKit.create(context.applicationContext)
+    private val room: Room = LiveKit.create(context.applicationContext, options = QUALITY)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var eventsJob: Job? = null
     private val users = LinkedHashMap<String, AppRemoteUser>()
@@ -78,6 +84,36 @@ class AppEngine private constructor(
         private set
 
     companion object {
+        /**
+         * What every call publishes unless the app says otherwise.
+         *
+         * 1080p with three simulcast layers: the server hands each viewer the
+         * layer their screen and link can take, so a weak connection still gets
+         * a picture and a strong one gets a sharp one. Voice at 96 kbps with
+         * redundancy and no DTX — the difference between a phone call and being
+         * in the room. Left to the engine's defaults, video published at 720p
+         * and small tiles were served the lowest layer, which looked soft.
+         */
+        private val QUALITY = RoomOptions(
+            adaptiveStream = true,
+            dynacast = true,
+            videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = VideoPreset169.H1080.capture),
+            videoTrackPublishDefaults = VideoTrackPublishDefaults(
+                videoEncoding = VideoPreset169.H1080.encoding,
+                simulcast = true,
+            ),
+            audioTrackCaptureDefaults = LocalAudioTrackOptions(
+                noiseSuppression = true,
+                echoCancellation = true,
+                autoGainControl = true,
+            ),
+            audioTrackPublishDefaults = AudioTrackPublishDefaults(
+                audioBitrate = 96_000,
+                dtx = false,
+                red = true,
+            ),
+        )
+
         /** Create an engine instance with your AppLooma RTC App ID (applooma.dev/dashboard). */
         @JvmStatic
         @JvmOverloads
