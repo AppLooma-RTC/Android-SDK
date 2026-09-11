@@ -74,7 +74,7 @@ class AppEngine private constructor(
     val appId: String,
     private val eventHandler: AppEventHandler?,
 ) {
-    private val room: Room = LiveKit.create(context.applicationContext, options = QUALITY)
+    private val room: Room = LiveKit.create(context.applicationContext, options = QUALITY, overrides = AUDIO)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var eventsJob: Job? = null
     private val users = LinkedHashMap<String, AppRemoteUser>()
@@ -115,6 +115,21 @@ class AppEngine private constructor(
                 audioBitrate = 96_000,
                 dtx = false,
                 red = true,
+            ),
+        )
+
+        /**
+         * Echo cancellation in software. The hardware canceller most phones
+         * ship is tuned for the earpiece and gives up on the loudspeaker, which
+         * is where a video call lives — the other side hears themselves. The
+         * engine's own canceller handles both; it costs a little CPU.
+         */
+        private val AUDIO = io.livekit.android.LiveKitOverrides(
+            audioOptions = io.livekit.android.AudioOptions(
+                javaAudioDeviceModuleCustomizer = { builder ->
+                    builder.setUseHardwareAcousticEchoCanceler(false)
+                    builder.setUseHardwareNoiseSuppressor(false)
+                },
             ),
         )
 

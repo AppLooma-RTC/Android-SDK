@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.3.1"
+version = "0.3.2"
 
 android {
     namespace = "com.applooma.rtc"
@@ -35,7 +35,7 @@ android {
 dependencies {
     // implementation, not api: the transport layer is an internal detail and
     // must not leak onto a consumer's compile classpath.
-    implementation("com.applooma:rtc-core-android:2.12.0")
+    implementation("com.applooma:rtc-core-android:2.12.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
 
