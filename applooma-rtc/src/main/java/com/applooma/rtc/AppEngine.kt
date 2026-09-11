@@ -101,6 +101,10 @@ class AppEngine private constructor(
             videoTrackPublishDefaults = VideoTrackPublishDefaults(
                 videoEncoding = VideoPreset169.H1080.encoding,
                 simulcast = true,
+                // Every Android phone encodes and decodes H.264 in hardware;
+                // VP8 at 1080p is software on most of them, and a starved
+                // software encoder is what a blurry, stuttering call looks like.
+                videoCodec = "h264",
             ),
             audioTrackCaptureDefaults = LocalAudioTrackOptions(
                 noiseSuppression = true,
