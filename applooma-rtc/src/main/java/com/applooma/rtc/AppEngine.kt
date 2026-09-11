@@ -144,6 +144,27 @@ class AppEngine private constructor(
     fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on) }
     fun enableMicrophone(on: Boolean) = launchSafely { room.localParticipant.setMicrophoneEnabled(on) }
 
+    /** Flip between the front and back cameras. Does nothing until the camera is on. */
+    fun switchCamera() = launchSafely {
+        (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.switchCamera()
+    }
+
+    /**
+     * Route audio to the loudspeaker (true) or the earpiece (false).
+     *
+     * The default routing prefers the earpiece, which is right for a phone
+     * call and wrong for a video call held at arm's length. A wired or
+     * Bluetooth headset, when present, keeps priority either way.
+     */
+    fun setSpeakerphone(on: Boolean) {
+        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return
+        val wanted = handler.availableAudioDevices.firstOrNull {
+            if (on) it is com.twilio.audioswitch.AudioDevice.Speakerphone
+            else it is com.twilio.audioswitch.AudioDevice.Earpiece
+        } ?: return
+        handler.selectDevice(wanted)
+    }
+
     /** Broadcast data to the channel (chat, signals, gifts). */
     /**
      * Send a message to everyone in the channel.
@@ -206,6 +227,9 @@ class AppEngine private constructor(
 
     /** Everyone on stage: the host and any co-hosts, excluding you. */
     val hosts: List<AppRemoteUser> get() = users.values.filter { it.isPublisher }
+
+    /** Whether your own camera is publishing right now — what a self-view tile should key on. */
+    val hasLocalVideo: Boolean get() = localVideoTrack != null
 
     // Internal: AppVideoView needs the room to initialise a renderer, and the
     // local camera track to draw a preview. Neither belongs in the public API.

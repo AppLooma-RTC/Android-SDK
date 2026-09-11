@@ -43,6 +43,8 @@ engine.joinChannelAsync(token, wsUrl, new AppJoinOptions(AppRole.HOST, true, tru
 ```kotlin
 engine.enableCamera(false)
 engine.enableMicrophone(false)
+engine.switchCamera()          // front <-> back
+engine.setSpeakerphone(true)   // loudspeaker for a video call; earpiece otherwise
 engine.sendData("hello".toByteArray())
 engine.leaveChannel()
 engine.destroy()
