@@ -64,9 +64,9 @@ publishing {
                     }
                 }
                 scm {
-                    url.set("https://github.com/apploomadev/Android-SDK")
-                    connection.set("scm:git:git://github.com/apploomadev/Android-SDK.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/apploomadev/Android-SDK.git")
+                    url.set("https://github.com/AppLooma-RTC/Android-SDK")
+                    connection.set("scm:git:git://github.com/AppLooma-RTC/Android-SDK.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/AppLooma-RTC/Android-SDK.git")
                 }
             }
         }
