@@ -121,6 +121,8 @@ class AppEngine private constructor(
     private val pendingData = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var lastRole: AppRole? = null
     private var playbackVolume = 100
+    private var videoConfig: AppVideoConfig = options.video
+    private var noiseSuppression = true
 
     @Volatile
     var isJoined: Boolean = false
@@ -254,6 +256,67 @@ class AppEngine private constructor(
             val meta = try { JSONObject(room.localParticipant.metadata ?: "{}") } catch (_: Exception) { JSONObject() }
             return when (meta.optString("role")) { "host" -> AppRole.HOST; "cohost" -> AppRole.COHOST; else -> AppRole.AUDIENCE }
         }
+
+    /**
+     * Change camera resolution, frame rate or bitrate while publishing — the
+     * hook for a thermal throttle (drop to 720p/15 fps when the phone is hot)
+     * or a crowd rule (lower the host's bitrate when the room passes N viewers).
+     *
+     * Resolution and fps change in place, without a republish. A bitrate or
+     * simulcast change republishes the camera, which costs about half a second
+     * of video for viewers and nothing for audio.
+     */
+    fun setVideoConfig(config: AppVideoConfig) = launchSafely {
+        val previous = videoConfig
+        videoConfig = config
+        val ro = roomOptions(options.copy(video = config))
+        val lp = room.localParticipant
+        lp.videoTrackCaptureDefaults = ro.videoTrackCaptureDefaults ?: lp.videoTrackCaptureDefaults
+        lp.videoTrackPublishDefaults = ro.videoTrackPublishDefaults ?: lp.videoTrackPublishDefaults
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
+        val republish = config.maxBitrate != previous.maxBitrate || config.simulcast != previous.simulcast
+        if (republish) {
+            lp.setCameraEnabled(false)
+            lp.setCameraEnabled(true)
+        } else {
+            track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
+        }
+    }
+
+    /** The camera settings in force right now. */
+    val currentVideoConfig: AppVideoConfig get() = videoConfig
+
+    /**
+     * Turn noise suppression on or off at runtime. It costs CPU per published
+     * stream, so a crowded voice room can switch it off above a headcount and
+     * back on when the room thins out. Re-captures the microphone; a few tens
+     * of milliseconds of audio are lost while it restarts.
+     */
+    fun setNoiseSuppression(on: Boolean) = launchSafely {
+        if (noiseSuppression == on) return@launchSafely
+        noiseSuppression = on
+        val lp = room.localParticipant
+        lp.audioTrackCaptureDefaults = lp.audioTrackCaptureDefaults.copy(noiseSuppression = on)
+        if (lp.isMicrophoneEnabled()) {
+            lp.setMicrophoneEnabled(false)
+            lp.setMicrophoneEnabled(true)
+        }
+    }
+
+    val isNoiseSuppressionEnabled: Boolean get() = noiseSuppression
+
+    /**
+     * Grab one frame of your own camera as a Bitmap, on this device only.
+     * Nothing is uploaded. Use it for a host presence check or a thumbnail.
+     * Returns null through the callback if the camera is off.
+     *
+     * @param maxEdge longest side of the returned bitmap; 0 = full size.
+     */
+    @JvmOverloads
+    fun captureLocalFrame(maxEdge: Int = 480, callback: (android.graphics.Bitmap?) -> Unit) {
+        val track = localVideoTrack ?: return callback(null)
+        FrameGrab(track, maxEdge) { bmp -> onMain { callback(bmp) } }.start()
+    }
 
     /** Microphone gain, 0..400 (100 = as captured). Applied before sending. */
     fun setRecordingVolume(volume: Int) { mixer.recordingVolume = volume.coerceIn(0, 400) }
