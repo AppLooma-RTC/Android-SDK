@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.3.2"
+version = "0.4.0"
 
 android {
     namespace = "com.applooma.rtc"
@@ -33,9 +33,10 @@ android {
 }
 
 dependencies {
-    // implementation, not api: the transport layer is an internal detail and
-    // must not leak onto a consumer's compile classpath.
-    implementation("com.applooma:rtc-core-android:2.12.1")
+    // api, not implementation: a Java consumer's compiler resolves every type
+    // in AppRemoteUser's signatures, internal members included, and failed
+    // with "cannot access VideoTrack" when the core was runtime-only.
+    api("com.applooma:rtc-core-android:2.12.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
 

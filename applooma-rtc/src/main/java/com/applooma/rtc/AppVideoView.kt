@@ -9,17 +9,15 @@ import io.livekit.android.room.track.VideoTrack
 /**
  * Renders a participant's camera.
  *
- * Add it to your layout like any other view, then attach a participant:
+ * Add it to your layout like any other view, then attach a participant.
+ * Attach as early as you like — in onUserJoined, or even before you join for
+ * your own preview: if the camera has not arrived yet, the view waits and
+ * starts drawing the moment it does.
  *
  * ```kotlin
  * val tile = AppVideoView(context)
  * container.addView(tile)
- *
- * // A participant is announced before their camera arrives, so attach here
- * // rather than in onUserJoined, or the tile stays black.
- * override fun onTrackSubscribed(user: AppRemoteUser) {
- *     tile.attach(engine, user)
- * }
+ * override fun onUserJoined(user: AppRemoteUser) { tile.attach(engine, user) }
  * ```
  *
  * Call [release] when the view goes away — a renderer holds native resources
@@ -34,6 +32,9 @@ class AppVideoView @JvmOverloads constructor(
     private val renderer = TextureViewRenderer(context)
     private var attachedTrack: VideoTrack? = null
     private var initialised = false
+    private var waitingFor: AppRemoteUser? = null
+    private var waitingLocal: AppEngine? = null
+    private var waitingEngine: AppEngine? = null
 
     init {
         addView(
@@ -42,14 +43,43 @@ class AppVideoView @JvmOverloads constructor(
         )
     }
 
-    /** Renders a remote participant's camera. Does nothing until they publish one. */
+    /** Renders a remote participant's camera, now or as soon as they publish one. */
     fun attach(engine: AppEngine, user: AppRemoteUser) {
-        attach(engine, user.videoTrack)
+        clearWait()
+        val track = user.videoTrack
+        if (track == null) {
+            waitingFor = user; waitingEngine = engine
+            engine.trackWaiters.add(this)
+            detach()
+            return
+        }
+        attach(engine, track)
     }
 
-    /** Renders your own camera. */
+    /** Renders your own camera, now or as soon as it is on. */
     fun attachLocal(engine: AppEngine) {
-        attach(engine, engine.localVideoTrack)
+        clearWait()
+        val track = engine.localVideoTrack
+        if (track == null) {
+            waitingLocal = engine; waitingEngine = engine
+            engine.trackWaiters.add(this)
+            detach()
+            return
+        }
+        attach(engine, track)
+    }
+
+    internal fun trackArrived(engine: AppEngine, user: AppRemoteUser) {
+        if (waitingFor?.uid == user.uid) attach(engine, user)
+    }
+
+    internal fun localTrackArrived(engine: AppEngine) {
+        if (waitingLocal === engine) attachLocal(engine)
+    }
+
+    private fun clearWait() {
+        waitingEngine?.trackWaiters?.remove(this)
+        waitingFor = null; waitingLocal = null; waitingEngine = null
     }
 
     private fun attach(engine: AppEngine, track: VideoTrack?) {
@@ -74,6 +104,9 @@ class AppVideoView @JvmOverloads constructor(
         attachedTrack = null
     }
 
+    /** Whether frames are being drawn right now. */
+    val isRendering: Boolean get() = attachedTrack != null
+
     /** Releases the renderer's native resources. The view cannot be reused after this. */
     fun release() {
         detach()
@@ -82,6 +115,7 @@ class AppVideoView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        clearWait()
         detach()
         super.onDetachedFromWindow()
     }

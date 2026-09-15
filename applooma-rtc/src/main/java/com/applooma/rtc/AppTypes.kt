@@ -8,6 +8,61 @@ import java.util.Date
 /** Roles supported by AppLooma RTC channels. */
 enum class AppRole { HOST, COHOST, AUDIENCE }
 
+/**
+ * How the engine treats audio for the whole session. Pick once, at create time.
+ *
+ * CALL routes voice through the phone's communication path: echo cancellation
+ * tuned for speech, the earpiece by default, volume keys control the call.
+ * MEDIA treats the session like a music player: wider bandwidth, the
+ * loudspeaker by default, media volume keys. Voice rooms with music and live
+ * streams sound better on MEDIA; a private call belongs on CALL.
+ */
+enum class AppAudioScenario { CALL, MEDIA }
+
+/** Capture and encode settings for your own camera. */
+data class AppVideoConfig @JvmOverloads constructor(
+    /** 360, 540, 720 or 1080 — the short edge of a 16:9 frame. */
+    val height: Int = 1080,
+    val fps: Int = 30,
+    /** Cap on the encoder's bitrate in bits per second; 0 = the preset's default. */
+    val maxBitrate: Int = 0,
+    /** Three layers so weak links still get a picture. Off = one layer only. */
+    val simulcast: Boolean = true,
+)
+
+/** Engine-wide settings. All optional; the defaults are what most apps want. */
+data class AppEngineOptions @JvmOverloads constructor(
+    val audioScenario: AppAudioScenario = AppAudioScenario.CALL,
+    val video: AppVideoConfig = AppVideoConfig(),
+    /** Echo cancellation in software rather than the phone's own. Keep on unless you know why. */
+    val softwareEchoCancellation: Boolean = true,
+)
+
+/** Which simulcast layer to receive from a remote camera. */
+enum class AppRemoteQuality { LOW, MEDIUM, HIGH }
+
+/** Where the in-room music player is. */
+enum class AppMusicState { STOPPED, PLAYING, PAUSED }
+
+/** Who is speaking and how loudly, 0..1. */
+data class AppSpeaker(val uid: String, val level: Float)
+
+/** Link quality for one participant, as the media server measures it. */
+enum class AppNetworkQuality { EXCELLENT, GOOD, POOR, LOST, UNKNOWN }
+
+/** A periodic snapshot of your own connection. Delivered by [AppEventHandler.onStats] every two seconds. */
+data class AppStats(
+    /** Round-trip time to the media server in milliseconds, or -1 if unknown. */
+    val rttMs: Int,
+    /** Fraction of outgoing packets lost since the last snapshot, 0..1. */
+    val uploadLoss: Float,
+    /** Fraction of incoming packets lost since the last snapshot, 0..1. */
+    val downloadLoss: Float,
+    val uploadBitrate: Int,
+    val downloadBitrate: Int,
+    val quality: AppNetworkQuality,
+)
+
 /** Options for joining a channel. */
 data class AppJoinOptions @JvmOverloads constructor(
     val role: AppRole = AppRole.HOST,
@@ -96,6 +151,13 @@ class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
      */
     val hasVideo: Boolean get() = videoTrack != null
 
+    /** Whether this user's microphone track is publishing. */
+    val hasAudio: Boolean get() = p.isMicrophoneEnabled()
+
+    /** Whether you have chosen not to hear this user (see AppEngine.muteRemoteUser). */
+    @Volatile var isMutedLocally: Boolean = false
+        internal set
+
     // Internal: rendering goes through AppVideoView, which needs these. Keeping
     // them out of the public API keeps the transport layer's types off a
     // consumer's compile classpath.
@@ -128,6 +190,30 @@ abstract class AppEventHandler {
     open fun onGiftReceived(gift: AppGiftEvent) {}
     open fun onActiveSpeakersChanged(uids: List<String>) {}
     open fun onError(error: Throwable) {}
+
+    /** You are in the channel. Media and messages work from this moment. */
+    open fun onJoined(localUid: String) {}
+    /** The connection dropped and the engine is bringing it back; media pauses. */
+    open fun onReconnecting() {}
+    /** Back in the channel after a drop, with the roster refreshed. */
+    open fun onReconnected() {}
+    /**
+     * Your role changed without leaving: your server promoted you to the stage
+     * or sent you back to the audience. The engine has already enabled or
+     * disabled your microphone to match.
+     */
+    open fun onRoleChanged(role: AppRole) {}
+    /** Who is speaking and how loudly. Fires with every change, at most every 300 ms. */
+    open fun onSpeakerLevels(speakers: List<AppSpeaker>) {}
+    /** Another participant's link quality changed. */
+    open fun onNetworkQuality(uid: String, quality: AppNetworkQuality) {}
+    /** Your own connection, every two seconds while joined. */
+    open fun onStats(stats: AppStats) {}
+    /** A remote user turned their camera or microphone on or off. */
+    open fun onUserMediaChanged(user: AppRemoteUser, video: Boolean, audio: Boolean) {}
+    open fun onMusicStateChanged(state: AppMusicState) {}
+    /** The music file reached its end (after the last loop). */
+    open fun onMusicFinished() {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */
