@@ -3,6 +3,7 @@ package com.applooma.rtc
 import android.content.Context
 import io.livekit.android.AudioOptions
 import io.livekit.android.AudioType
+import io.livekit.android.ConnectOptions
 import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.RoomOptions
@@ -140,8 +141,13 @@ class AppEngine private constructor(
                 VideoEncoding(maxBitrate = if (o.video.maxBitrate > 0) o.video.maxBitrate else preset.encoding.maxBitrate, maxFps = o.video.fps)
             else preset.encoding
             return RoomOptions(
+                // Adaptive stream still down-shifts a remote layer for a small or
+                // hidden view (good on weak links). Dynacast is OFF: with it on, a
+                // publisher withholds a video layer until a subscriber's "viewing"
+                // signal arrives, which on flaky links left co-hosts staring at a
+                // black frame. Off, every publisher always sends — video just works.
                 adaptiveStream = true,
-                dynacast = true,
+                dynacast = false,
                 videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = preset.capture),
                 videoTrackPublishDefaults = VideoTrackPublishDefaults(
                     videoEncoding = encoding,
@@ -176,7 +182,9 @@ class AppEngine private constructor(
     suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
         subscribeEvents()
-        room.connect(wsUrl, token)
+        // Auto-subscribe so an audience member (and every co-host) receives all
+        // published tracks the moment they join — no manual per-track subscribe.
+        room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         isJoined = true
 
         // Participants already in the room when we join never produce a
