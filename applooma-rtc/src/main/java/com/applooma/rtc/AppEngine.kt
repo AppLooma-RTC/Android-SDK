@@ -152,9 +152,12 @@ class AppEngine private constructor(
                 videoTrackPublishDefaults = VideoTrackPublishDefaults(
                     videoEncoding = encoding,
                     simulcast = o.video.simulcast,
-                    // Every Android phone encodes and decodes H.264 in hardware;
-                    // VP8 at 1080p is software on most of them.
-                    videoCodec = "h264",
+                    // VP8, not H.264. Many Android H.264 hardware encoders emit a
+                    // stream that decodes fine locally but is black/corrupt for
+                    // remote viewers (worse with simulcast) — the classic
+                    // "publisher sees themselves, everyone else sees black". VP8
+                    // is decodable everywhere and is the reliable default.
+                    videoCodec = "vp8",
                 ),
                 audioTrackCaptureDefaults = LocalAudioTrackOptions(noiseSuppression = true, echoCancellation = true, autoGainControl = true),
                 audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = 96_000, dtx = false, red = true),
