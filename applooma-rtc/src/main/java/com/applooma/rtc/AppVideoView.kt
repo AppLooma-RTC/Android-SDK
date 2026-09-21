@@ -20,6 +20,10 @@ import io.livekit.android.room.track.VideoTrack
  * override fun onUserJoined(user: AppRemoteUser) { tile.attach(engine, user) }
  * ```
  *
+ * A view attached with [attachLocal] follows your camera through every
+ * restart — off/on, front/back, a settings change — so a self-preview never
+ * stays stuck on the last frame of a track that is gone.
+ *
  * Call [release] when the view goes away — a renderer holds native resources
  * that are not freed by garbage collection.
  */
@@ -35,6 +39,8 @@ class AppVideoView @JvmOverloads constructor(
     private var waitingFor: AppRemoteUser? = null
     private var waitingLocal: AppEngine? = null
     private var waitingEngine: AppEngine? = null
+    // Set while this view shows the local camera; the engine re-binds it on every track change.
+    private var localEngine: AppEngine? = null
 
     init {
         addView(
@@ -46,6 +52,7 @@ class AppVideoView @JvmOverloads constructor(
     /** Renders a remote participant's camera, now or as soon as they publish one. */
     fun attach(engine: AppEngine, user: AppRemoteUser) {
         clearWait()
+        clearLocal()
         val track = user.videoTrack
         if (track == null) {
             waitingFor = user; waitingEngine = engine
@@ -56,9 +63,11 @@ class AppVideoView @JvmOverloads constructor(
         attach(engine, track)
     }
 
-    /** Renders your own camera, now or as soon as it is on. */
+    /** Renders your own camera, now or as soon as it is on — and again after every restart. */
     fun attachLocal(engine: AppEngine) {
         clearWait()
+        localEngine = engine
+        engine.localViews.add(this)
         val track = engine.localVideoTrack
         if (track == null) {
             waitingLocal = engine; waitingEngine = engine
@@ -74,12 +83,29 @@ class AppVideoView @JvmOverloads constructor(
     }
 
     internal fun localTrackArrived(engine: AppEngine) {
-        if (waitingLocal === engine) attachLocal(engine)
+        if (waitingLocal === engine || localEngine === engine) refreshLocal(engine)
+    }
+
+    /**
+     * Re-bind to the current local track if it is not the one being drawn.
+     * Camera off→on, switchCamera and setVideoConfig all replace the track
+     * underneath; without this the view kept rendering the dead one.
+     */
+    internal fun refreshLocal(engine: AppEngine) {
+        if (localEngine !== engine) return
+        val track = engine.localVideoTrack
+        if (track == null) { detach(); return }
+        if (track !== attachedTrack) attach(engine, track)
     }
 
     private fun clearWait() {
         waitingEngine?.trackWaiters?.remove(this)
         waitingFor = null; waitingLocal = null; waitingEngine = null
+    }
+
+    private fun clearLocal() {
+        localEngine?.localViews?.remove(this)
+        localEngine = null
     }
 
     private fun attach(engine: AppEngine, track: VideoTrack?) {
@@ -109,6 +135,8 @@ class AppVideoView @JvmOverloads constructor(
 
     /** Releases the renderer's native resources. The view cannot be reused after this. */
     fun release() {
+        clearWait()
+        clearLocal()
         detach()
         renderer.release()
         initialised = false
@@ -116,6 +144,7 @@ class AppVideoView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         clearWait()
+        clearLocal()
         detach()
         super.onDetachedFromWindow()
     }

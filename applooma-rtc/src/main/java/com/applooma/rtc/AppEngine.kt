@@ -1,10 +1,17 @@
 package com.applooma.rtc
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaCodecList
+import android.os.Build
 import io.livekit.android.AudioOptions
 import io.livekit.android.AudioType
 import io.livekit.android.ConnectOptions
 import io.livekit.android.LiveKit
+import io.livekit.android.audio.AudioProcessorInterface
+import io.livekit.android.audio.AudioProcessorOptions
+import io.livekit.android.room.participant.BackupVideoCodec
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.RoomOptions
 import io.livekit.android.audio.AudioBufferCallbackDispatcher
@@ -96,25 +103,39 @@ class AppEngine private constructor(
         override fun onMusicError(error: Throwable) { onMain { eventHandler?.onError(error) } }
     })
 
+    // Post-processing microphone gain with a soft limiter (see AppAudioOptions.micGain).
+    private val micGain = MicGainProcessor(options.audio.micGain)
+
     private val room: Room = LiveKit.create(
         context.applicationContext,
         options = roomOptions(options),
         overrides = LiveKitOverrides(
             audioOptions = AudioOptions(
-                audioOutputType = if (options.audioScenario == AppAudioScenario.MEDIA) AudioType.MediaAudioType() else AudioType.CallAudioType(),
+                // MEDIA keeps media attributes (loudspeaker, media volume keys,
+                // music-grade bandwidth) but runs in the communication audio
+                // mode so the phone's echo canceller is engaged. Plain media
+                // mode leaves the canceller off, and a loudspeaker session then
+                // feeds itself back after a minute or two.
+                audioOutputType = if (options.audioScenario == AppAudioScenario.MEDIA) AudioType.CustomAudioType(
+                    AudioManager.MODE_IN_COMMUNICATION,
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build(),
+                    AudioManager.STREAM_MUSIC,
+                ) else AudioType.CallAudioType(),
                 javaAudioDeviceModuleCustomizer = { builder ->
-                    if (options.softwareEchoCancellation) {
-                        // The hardware canceller most phones ship is tuned for
-                        // the earpiece and gives up on the loudspeaker.
-                        builder.setUseHardwareAcousticEchoCanceler(false)
-                        builder.setUseHardwareNoiseSuppressor(false)
-                    }
-                    // One hook serves music mixing and the recording gain.
+                    val hardware = options.audio.preferHardwareEffects && !options.softwareEchoCancellation
+                    // The platform canceller references everything the phone
+                    // plays (in-room music included); WebRTC's software AEC
+                    // only knows its own render path. Use the phone's when it
+                    // has one, with the software stages still behind it.
+                    builder.setUseHardwareAcousticEchoCanceler(hardware && options.audio.echoCancellation)
+                    builder.setUseHardwareNoiseSuppressor(hardware && options.audio.noiseSuppression)
+                    // One hook serves music mixing and the (pre-processing) recording gain.
                     builder.setAudioBufferCallback(AudioBufferCallbackDispatcher().also { it.bufferCallback = mixer })
                 },
+                audioProcessorOptions = AudioProcessorOptions(capturePostProcessor = micGain),
             ),
         ),
-    )
+    ).also { mixer.playoutUsage = if (options.audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var eventsJob: Job? = null
     private var statsJob: Job? = null
@@ -130,16 +151,43 @@ class AppEngine private constructor(
         private set
 
     companion object {
+        private const val TAG = "AppLoomaRTC"
+
+        /** Whether this phone has a hardware encoder for the given MIME type. */
+        internal fun hasHardwareEncoder(mime: String): Boolean = try {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+                info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
+                    if (Build.VERSION.SDK_INT >= 29) info.isHardwareAccelerated
+                    else !(info.name.startsWith("OMX.google.", true) || info.name.startsWith("c2.android.", true))
+            }
+        } catch (_: Throwable) { false }
+
+        /** The codec actually published for a config on this phone, after AUTO is resolved. */
+        internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
+            AppVideoCodec.VP8 -> "vp8"
+            AppVideoCodec.H264 -> "h264"
+            // Hardware VP8 (Exynos, MediaTek, most Samsung) → VP8. No hardware
+            // VP8 (budget Qualcomm) → H.264 in hardware rather than VP8 on the
+            // CPU, which at 720p/30 + simulcast drops frames and starves audio.
+            AppVideoCodec.AUTO -> if (hasHardwareEncoder("video/x-vnd.on2.vp8")) "vp8" else "h264"
+        }
+
         private fun roomOptions(o: AppEngineOptions): RoomOptions {
-            val preset = when (o.video.height) {
+            val heights = intArrayOf(360, 540, 720, 1080)
+            val height = heights.minByOrNull { kotlin.math.abs(it - o.video.height) } ?: 1080
+            if (height != o.video.height) android.util.Log.w(TAG, "AppVideoConfig.height=${o.video.height} is not a preset; using ${height}p")
+            val preset = when (height) {
                 360 -> VideoPreset169.H360
                 540 -> VideoPreset169.H540
                 720 -> VideoPreset169.H720
                 else -> VideoPreset169.H1080
             }
+            if (o.video.maxBitrate in 1 until 10_000)
+                android.util.Log.w(TAG, "AppVideoConfig.maxBitrate=${o.video.maxBitrate} is in bits per second — did you mean ${o.video.maxBitrate}_000 (kbps)?")
             val encoding = if (o.video.maxBitrate > 0 || o.video.fps != 30)
                 VideoEncoding(maxBitrate = if (o.video.maxBitrate > 0) o.video.maxBitrate else preset.encoding.maxBitrate, maxFps = o.video.fps)
             else preset.encoding
+            val codec = resolveCodec(o.video.codec)
             return RoomOptions(
                 // Adaptive stream still down-shifts a remote layer for a small or
                 // hidden view (good on weak links). Dynacast is OFF: with it on, a
@@ -152,14 +200,18 @@ class AppEngine private constructor(
                 videoTrackPublishDefaults = VideoTrackPublishDefaults(
                     videoEncoding = encoding,
                     simulcast = o.video.simulcast,
-                    // VP8, not H.264. Many Android H.264 hardware encoders emit a
-                    // stream that decodes fine locally but is black/corrupt for
-                    // remote viewers (worse with simulcast) — the classic
-                    // "publisher sees themselves, everyone else sees black". VP8
-                    // is decodable everywhere and is the reliable default.
-                    videoCodec = "vp8",
+                    videoCodec = codec,
+                    // When H.264 is published, a VP8 layer rides along as backup:
+                    // a viewer whose phone cannot decode the H.264 stream (or a
+                    // hardware encoder that emits something only it can read) is
+                    // served VP8 by the server instead of a black frame.
+                    backupCodec = if (codec == "h264") BackupVideoCodec(codec = "vp8", encoding = encoding, simulcast = o.video.simulcast) else null,
                 ),
-                audioTrackCaptureDefaults = LocalAudioTrackOptions(noiseSuppression = true, echoCancellation = true, autoGainControl = true),
+                audioTrackCaptureDefaults = LocalAudioTrackOptions(
+                    noiseSuppression = o.audio.noiseSuppression,
+                    echoCancellation = o.audio.echoCancellation,
+                    autoGainControl = o.audio.autoGainControl,
+                ),
                 audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = 96_000, dtx = false, red = true),
             )
         }
@@ -184,11 +236,14 @@ class AppEngine private constructor(
      */
     suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
+        joinStartedAt = System.currentTimeMillis()
+        firstFrameSeen.clear()
         subscribeEvents()
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
         room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         isJoined = true
+        eventHandler?.onConnectionStage(AppConnectionStage.CONNECTED, null, elapsedSinceJoin())
 
         // Participants already in the room when we join never produce a
         // ParticipantConnected event; without this an audience member joining a
@@ -238,11 +293,11 @@ class AppEngine private constructor(
     // Fire-and-forget for Java callers, so a failure (missing CAMERA
     // permission, publish rejected) is reported rather than thrown from a
     // coroutine, where it would crash the host application.
-    fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on) }
+    fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged() }
     fun enableMicrophone(on: Boolean) = launchSafely { room.localParticipant.setMicrophoneEnabled(on) }
 
     /** Flip between the front and back cameras. Does nothing until the camera is on. */
-    fun switchCamera() = launchSafely { (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.switchCamera() }
+    fun switchCamera() = launchSafely { (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.switchCamera(); notifyLocalVideoChanged() }
 
     /**
      * Route audio to the loudspeaker (true) or the earpiece (false).
@@ -292,6 +347,7 @@ class AppEngine private constructor(
         } else {
             track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
         }
+        notifyLocalVideoChanged()
     }
 
     /** The camera settings in force right now. */
@@ -517,6 +573,52 @@ class AppEngine private constructor(
 
     // Views waiting for a track that has not arrived yet (see AppVideoView.attach).
     internal val trackWaiters = LinkedHashSet<AppVideoView>()
+    // Views showing the local camera; re-bound on every local track change.
+    internal val localViews = LinkedHashSet<AppVideoView>()
+    private var lastLocalTrack: VideoTrack? = null
+    private var joinStartedAt = 0L
+    private val firstFrameSeen = HashSet<String>()
+    private fun elapsedSinceJoin() = if (joinStartedAt == 0L) 0L else System.currentTimeMillis() - joinStartedAt
+
+    /**
+     * The local camera track was replaced (on/off, switch, config). Re-bind
+     * every self-view and tell the app. Safe to call when nothing changed.
+     */
+    internal fun notifyLocalVideoChanged() {
+        val now = localVideoTrack
+        val changed = now !== lastLocalTrack
+        lastLocalTrack = now
+        localViews.toList().forEach { it.refreshLocal(this) }
+        trackWaiters.toList().forEach { it.localTrackArrived(this) }
+        if (changed) onMain { eventHandler?.onLocalVideoChanged() }
+    }
+
+    /**
+     * Microphone gain applied after echo cancellation, noise suppression and
+     * AGC, with a soft limiter — so a distant voice gets louder without the
+     * clipping a pre-processing gain causes. 100 = unity, 200 = twice as loud.
+     * Prefer this over [setRecordingVolume], which sits before processing.
+     */
+    fun setMicGain(percent: Int) { micGain.gainPercent = percent.coerceIn(0, 400) }
+    val micGainPercent: Int get() = micGain.gainPercent
+
+    /** The codec this phone publishes with, after AUTO is resolved: "vp8" or "h264". */
+    val publishedCodec: String get() = resolveCodec(options.video.codec)
+
+    /** Fires onFirstRemoteVideoFrame once per remote user per join, then detaches. */
+    private inner class FirstFrameSink(private val uid: String, private val track: VideoTrack) : livekit.org.webrtc.VideoSink {
+        private val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun start() { try { track.addRenderer(this) } catch (_: Throwable) {} }
+        override fun onFrame(frame: livekit.org.webrtc.VideoFrame) {
+            if (!done.compareAndSet(false, true)) return
+            val ms = elapsedSinceJoin()
+            Thread { try { track.removeRenderer(this) } catch (_: Throwable) {} }.start()
+            onMain {
+                eventHandler?.onFirstRemoteVideoFrame(uid, ms)
+                eventHandler?.onConnectionStage(AppConnectionStage.FIRST_REMOTE_VIDEO_FRAME, uid, ms)
+            }
+        }
+    }
 
     private fun userFor(p: RemoteParticipant): AppRemoteUser = users.getOrPut(p.identity?.value ?: "") { AppRemoteUser(p) }
 
@@ -557,9 +659,45 @@ class AppEngine private constructor(
                     )
                     prevOutSent = outSent; prevOutLost = outLost; prevInRecv = inRecv; prevInLost = inLost; prevBytesOut = bytesOut; prevBytesIn = bytesIn; prevAt = now
                     eventHandler?.onStats(stats)
+                    // Belt and braces for self-views: if the local track was swapped
+                    // by a path that raised no event, the next tick re-binds it.
+                    if (localVideoTrack !== lastLocalTrack) notifyLocalVideoChanged()
+                    // Per-remote-user health — which picture is stuck, whose audio is dropping.
+                    val remote = users.values.mapNotNull { u -> remoteStatsFor(u) }
+                    if (remote.isNotEmpty()) eventHandler?.onRemoteStats(remote)
                 } catch (_: Throwable) { /* stats are best effort */ }
             }
         }
+    }
+
+    private suspend fun trackStats(track: Track?): livekit.org.webrtc.RTCStatsReport? {
+        if (track == null) return null
+        return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            try { track.getRTCStats { cont.resume(it) {} } } catch (_: Throwable) { cont.resume(null) {} }
+        }
+    }
+
+    private suspend fun remoteStatsFor(u: AppRemoteUser): AppRemoteStats? {
+        val video = u.raw.videoTrackPublications.firstNotNullOfOrNull { it.second }
+        val audio = u.raw.audioTrackPublications.firstNotNullOfOrNull { it.second }
+        if (video == null && audio == null) return null
+        var fps = 0; var w = 0; var h = 0; var freezes = 0; var vLost = 0L; var aLost = 0L; var jitterMs = 0
+        trackStats(video)?.statsMap?.values?.filter { it.type == "inbound-rtp" }?.forEach { s ->
+            val m = s.members
+            fps = (m["framesPerSecond"] as? Number)?.toInt() ?: fps
+            w = (m["frameWidth"] as? Number)?.toInt() ?: w
+            h = (m["frameHeight"] as? Number)?.toInt() ?: h
+            freezes = (m["freezeCount"] as? Number)?.toInt() ?: freezes
+            vLost = (m["packetsLost"] as? Number)?.toLong() ?: vLost
+        }
+        trackStats(audio)?.statsMap?.values?.filter { it.type == "inbound-rtp" }?.forEach { s ->
+            val m = s.members
+            aLost = (m["packetsLost"] as? Number)?.toLong() ?: aLost
+            val jbDelay = (m["jitterBufferDelay"] as? Number)?.toDouble() ?: 0.0
+            val jbEmitted = (m["jitterBufferEmittedCount"] as? Number)?.toDouble() ?: 0.0
+            if (jbEmitted > 0) jitterMs = (jbDelay / jbEmitted * 1000).toInt()
+        }
+        return AppRemoteStats(uid = u.uid, videoFps = fps, videoWidth = w, videoHeight = h, videoFreezeCount = freezes, videoPacketsLost = vLost, audioPacketsLost = aLost, audioJitterMs = jitterMs)
     }
 
     private suspend fun rtcStats(publisher: Boolean): livekit.org.webrtc.RTCStatsReport? =
@@ -610,13 +748,23 @@ class AppEngine private constructor(
                         if (u.isMutedLocally) (event.track as? RemoteAudioTrack)?.setVolume(0.0)
                         else if (playbackVolume != 100) (event.track as? RemoteAudioTrack)?.setVolume(playbackVolume / 100.0)
                         eventHandler?.onTrackSubscribed(u)
-                        if (event.track is VideoTrack) trackWaiters.toList().forEach { it.trackArrived(this@AppEngine, u) }
+                        if (event.track is VideoTrack) {
+                            trackWaiters.toList().forEach { it.trackArrived(this@AppEngine, u) }
+                            // Time-to-first-frame, once per user per join.
+                            if (firstFrameSeen.add(u.uid)) FirstFrameSink(u.uid, event.track as VideoTrack).start()
+                        }
                     }
-                    is RoomEvent.TrackPublished -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
+                    is RoomEvent.TrackPublished ->
+                        if (event.participant === room.localParticipant) notifyLocalVideoChanged()
+                        else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.TrackUnpublished -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.TrackMuted -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
-                    is RoomEvent.TrackUnmuted -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
-                    is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) trackWaiters.toList().forEach { it.localTrackArrived(this@AppEngine) }
+                    // Camera off→on keeps the publication and swaps the track underneath:
+                    // the unmute is the moment self-views must re-bind.
+                    is RoomEvent.TrackUnmuted ->
+                        if (event.participant === room.localParticipant) notifyLocalVideoChanged()
+                        else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
+                    is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) notifyLocalVideoChanged()
                     is RoomEvent.Reconnecting -> eventHandler?.onReconnecting()
                     is RoomEvent.Reconnected -> {
                         users.clear()
@@ -679,4 +827,35 @@ class AppEngine private constructor(
         leaveChannel()
         scope.launch { room.release() }
     }
+}
+
+/**
+ * Post-processing microphone gain: runs after WebRTC's AEC/NS/AGC on the
+ * capture path, so boosting a quiet, distant voice does not also boost what
+ * the suppressor was about to remove, and a soft limiter keeps loud moments
+ * from clipping (the pre-processing recording gain had no such guard).
+ */
+internal class MicGainProcessor(@Volatile var gainPercent: Int) : AudioProcessorInterface {
+    override fun isEnabled(): Boolean = gainPercent != 100
+    override fun getName(): String = "applooma-mic-gain"
+    override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) {}
+    override fun resetAudioProcessing(newRate: Int) {}
+    override fun processAudio(numBands: Int, numFrames: Int, buffer: java.nio.ByteBuffer) {
+        val g = gainPercent / 100f
+        if (g == 1f) return
+        val fb = buffer.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        val n = numBands * numFrames
+        for (i in 0 until n) {
+            var y = fb.get(i) * g
+            // Soft knee above ±0.8, hard ceiling at ±1: loud peaks compress instead of clip.
+            val a = kotlin.math.abs(y)
+            if (a > KNEE) {
+                val over = a - KNEE
+                val limited = KNEE + (1f - KNEE) * (1f - kotlin.math.exp(-over / (1f - KNEE)))
+                y = if (y < 0) -limited else limited
+            }
+            fb.put(i, y)
+        }
+    }
+    private companion object { const val KNEE = 0.8f }
 }

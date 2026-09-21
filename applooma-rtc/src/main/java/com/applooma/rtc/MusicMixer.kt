@@ -46,6 +46,12 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
     /** 0..100 → multiplier. 100 is unity; up to 400 allowed for quiet files. */
     @Volatile var playoutVolume: Int = 100
     @Volatile var publishVolume: Int = 100
+    /**
+     * Audio usage for the local playout track. MEDIA sessions play music on
+     * the media path (loudspeaker, media volume keys); CALL sessions on the
+     * communication path. Set once by the engine from its audio scenario.
+     */
+    @Volatile var playoutUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION
     /** Recording (microphone) gain, 0..400, 100 = unity. */
     @Volatile var recordingVolume: Int = 100
 
@@ -310,7 +316,7 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
             val channelMask = if (targetChannels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
             val minBuf = AudioTrack.getMinBufferSize(targetRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
             AudioTrack.Builder()
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(playoutUsage).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(targetRate).setChannelMask(channelMask).build())
                 .setBufferSizeInBytes(max(minBuf, targetRate * targetChannels * 2 / 5))
                 .setTransferMode(AudioTrack.MODE_STREAM)

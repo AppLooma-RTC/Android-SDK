@@ -19,23 +19,90 @@ enum class AppRole { HOST, COHOST, AUDIENCE }
  */
 enum class AppAudioScenario { CALL, MEDIA }
 
-/** Capture and encode settings for your own camera. */
+/**
+ * Which codec your camera is published with.
+ *
+ * AUTO (default) picks per phone: VP8 where the chipset has a hardware VP8
+ * encoder, otherwise H.264 (which every Android phone encodes in hardware),
+ * always with a VP8 backup layer so a viewer that cannot decode H.264 still
+ * gets a picture. Force one only for a known fleet.
+ */
+enum class AppVideoCodec { AUTO, VP8, H264 }
+
+/**
+ * Capture and encode settings for your own camera.
+ *
+ * `maxBitrate` is in **bits per second** — `1_900_000` for 1.9 Mbps. A value
+ * under 10 000 is almost certainly kbps by mistake and is logged as a warning.
+ * `height` must be one of 360 / 540 / 720 / 1080; anything else snaps to the
+ * nearest preset (also logged).
+ */
 data class AppVideoConfig @JvmOverloads constructor(
     /** 360, 540, 720 or 1080 — the short edge of a 16:9 frame. */
     val height: Int = 1080,
     val fps: Int = 30,
-    /** Cap on the encoder's bitrate in bits per second; 0 = the preset's default. */
+    /** Cap on the encoder's bitrate in bits per second (e.g. 1_900_000); 0 = the preset's default. */
     val maxBitrate: Int = 0,
     /** Three layers so weak links still get a picture. Off = one layer only. */
     val simulcast: Boolean = true,
+    /** VP8, H.264, or let the engine choose per phone. */
+    val codec: AppVideoCodec = AppVideoCodec.AUTO,
+)
+
+/**
+ * Microphone processing. Each stage can be switched independently; all are on
+ * by default. `micGain` is applied **after** processing (post-AEC/NS/AGC) with
+ * a soft limiter, so raising it makes a distant voice louder without the
+ * clipping that a pre-processing gain causes — use it instead of
+ * `setRecordingVolume` for "the host holds the phone at arm's length".
+ */
+data class AppAudioOptions @JvmOverloads constructor(
+    val echoCancellation: Boolean = true,
+    val noiseSuppression: Boolean = true,
+    val autoGainControl: Boolean = true,
+    /**
+     * Use the phone's own echo canceller / noise suppressor when it has one,
+     * with WebRTC's software stages behind it. On, the platform canceller also
+     * references everything the phone plays — including in-room music — so
+     * a host on the loudspeaker does not feed the room back to itself.
+     */
+    val preferHardwareEffects: Boolean = true,
+    /** Post-processing microphone gain in percent; 100 = unity, 200 = twice as loud (limited, never clips). */
+    val micGain: Int = 100,
 )
 
 /** Engine-wide settings. All optional; the defaults are what most apps want. */
 data class AppEngineOptions @JvmOverloads constructor(
     val audioScenario: AppAudioScenario = AppAudioScenario.CALL,
     val video: AppVideoConfig = AppVideoConfig(),
-    /** Echo cancellation in software rather than the phone's own. Keep on unless you know why. */
-    val softwareEchoCancellation: Boolean = true,
+    /**
+     * Force WebRTC's software echo canceller and ignore the phone's own.
+     * Off by default since 0.4.4: the platform canceller is what keeps a
+     * loudspeaker session from echoing. Same as `audio.preferHardwareEffects = false`.
+     */
+    val softwareEchoCancellation: Boolean = false,
+    val audio: AppAudioOptions = AppAudioOptions(),
+)
+
+/** Milestones on the way to seeing a remote picture, each with elapsed ms since joinChannel. */
+enum class AppConnectionStage { CONNECTED, FIRST_REMOTE_VIDEO_FRAME }
+
+/**
+ * Per-remote-user media health, delivered every two seconds while joined.
+ * `videoFps` 0 with a subscribed camera means that user's picture is stuck
+ * on your phone; `videoFreezeCount` climbs each time it stalls.
+ */
+data class AppRemoteStats(
+    val uid: String,
+    val videoFps: Int,
+    val videoWidth: Int,
+    val videoHeight: Int,
+    /** Times the picture stalled since you subscribed. */
+    val videoFreezeCount: Int,
+    val videoPacketsLost: Long,
+    val audioPacketsLost: Long,
+    /** Audio jitter-buffer delay in milliseconds. */
+    val audioJitterMs: Int,
 )
 
 /** Which simulcast layer to receive from a remote camera. */
@@ -214,6 +281,19 @@ abstract class AppEventHandler {
     open fun onMusicStateChanged(state: AppMusicState) {}
     /** The music file reached its end (after the last loop). */
     open fun onMusicFinished() {}
+
+    /**
+     * Your own camera track was (re)created — camera on/off, switch, or a
+     * settings change. Every [AppVideoView] showing you re-binds by itself;
+     * this is for anything else that holds a reference to your preview.
+     */
+    open fun onLocalVideoChanged() {}
+    /** The first decoded frame of a remote user's camera reached your screen. `elapsedMs` counts from joinChannel. */
+    open fun onFirstRemoteVideoFrame(uid: String, elapsedMs: Long) {}
+    /** A milestone on the way to picture, with elapsed ms since joinChannel — for measuring join latency. */
+    open fun onConnectionStage(stage: AppConnectionStage, uid: String?, elapsedMs: Long) {}
+    /** Per-remote-user media health, every two seconds while joined (see [AppRemoteStats]). */
+    open fun onRemoteStats(stats: List<AppRemoteStats>) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */
