@@ -69,7 +69,38 @@ data class AppAudioOptions @JvmOverloads constructor(
     val preferHardwareEffects: Boolean = true,
     /** Post-processing microphone gain in percent; 100 = unity, 200 = twice as loud (limited, never clips). */
     val micGain: Int = 100,
+    /**
+     * How hard residual noise between words is pushed down, after the
+     * suppressor has run. LOW is safe everywhere; HIGH / VERY_HIGH suit a noisy
+     * street or a fan next to the phone, at the cost of clipping the tail of a
+     * very quiet voice. See [AppNoiseSuppressionLevel]. Since 0.4.6.
+     */
+    val noiseSuppressionLevel: AppNoiseSuppressionLevel = AppNoiseSuppressionLevel.LOW,
+    /**
+     * Level the microphone is steered towards, in dBFS (0 = off). -18 is a
+     * good broadcast target: a whisper and a shout end up within a few dB of
+     * each other. Works on top of the engine's own AGC, after noise handling,
+     * and never boosts silence. Since 0.4.6.
+     */
+    val agcTargetLevelDbfs: Int = 0,
 )
+
+/**
+ * Residual-noise handling after the noise suppressor. Each level is the
+ * loudness below which the microphone is treated as "nobody is talking" and
+ * eased down by 20 dB; speech above it passes untouched.
+ */
+enum class AppNoiseSuppressionLevel(internal val thresholdDbfs: Float) {
+    OFF(Float.NEGATIVE_INFINITY),
+    /** -60 dBFS: only the faintest hiss. */
+    LOW(-60f),
+    /** -54 dBFS: room tone, distant traffic. */
+    MODERATE(-54f),
+    /** -48 dBFS: a fan, a busy room. */
+    HIGH(-48f),
+    /** -42 dBFS: a street, a crowd — will also eat the tail of a whisper. */
+    VERY_HIGH(-42f),
+}
 
 /** Engine-wide settings. All optional; the defaults are what most apps want. */
 data class AppEngineOptions @JvmOverloads constructor(

@@ -103,8 +103,9 @@ class AppEngine private constructor(
         override fun onMusicError(error: Throwable) { onMain { eventHandler?.onError(error) } }
     })
 
-    // Post-processing microphone gain with a soft limiter (see AppAudioOptions.micGain).
-    private val micGain = MicGainProcessor(options.audio.micGain)
+    // Post-processing chain: residual-noise gate, target-level AGC, gain, limiter
+    // (see AppAudioOptions.micGain / noiseSuppressionLevel / agcTargetLevelDbfs).
+    private val micGain = MicProcessor(options.audio.micGain, options.audio.noiseSuppressionLevel.thresholdDbfs, options.audio.agcTargetLevelDbfs)
 
     private val room: Room = LiveKit.create(
         context.applicationContext,
@@ -642,6 +643,21 @@ class AppEngine private constructor(
     fun setMicGain(percent: Int) { micGain.gainPercent = percent.coerceIn(0, 400) }
     val micGainPercent: Int get() = micGain.gainPercent
 
+    /**
+     * How hard residual noise between words is pushed down (after the
+     * suppressor). Takes effect immediately, mid-call. See [AppNoiseSuppressionLevel].
+     */
+    fun setNoiseSuppressionLevel(level: AppNoiseSuppressionLevel) { micGain.gateThresholdDbfs = level.thresholdDbfs; noiseLevel = level }
+    val noiseSuppressionLevel: AppNoiseSuppressionLevel get() = noiseLevel
+    private var noiseLevel = options.audio.noiseSuppressionLevel
+
+    /**
+     * Level the microphone is steered towards while someone talks, in dBFS
+     * (-18 is a good broadcast target; 0 turns it off). Immediate, mid-call.
+     */
+    fun setAgcTargetLevel(dbfs: Int) { micGain.agcTargetDbfs = dbfs.coerceIn(-40, 0) }
+    val agcTargetLevelDbfs: Int get() = micGain.agcTargetDbfs
+
     /** The codec this phone publishes with, after AUTO is resolved: "vp8" or "h264". */
     val publishedCodec: String get() = resolveCodec(options.video.codec)
 
@@ -873,21 +889,52 @@ class AppEngine private constructor(
 }
 
 /**
- * Post-processing microphone gain: runs after WebRTC's AEC/NS/AGC on the
- * capture path, so boosting a quiet, distant voice does not also boost what
- * the suppressor was about to remove, and a soft limiter keeps loud moments
- * from clipping (the pre-processing recording gain had no such guard).
+ * Post-processing microphone chain, run after WebRTC's AEC/NS/AGC on the
+ * capture path: residual-noise gate → target-level AGC → gain → soft limiter.
+ *
+ * Everything here works on what the suppressor left behind, so pushing the
+ * gate or the gain does not also lift what was about to be removed, and the
+ * limiter keeps loud moments from clipping (the pre-processing recording gain
+ * had no such guard). One buffer is 10 ms; the smoothing constants are per
+ * buffer.
  */
-internal class MicGainProcessor(@Volatile var gainPercent: Int) : AudioProcessorInterface {
-    override fun isEnabled(): Boolean = gainPercent != 100
-    override fun getName(): String = "applooma-mic-gain"
-    override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) {}
-    override fun resetAudioProcessing(newRate: Int) {}
+internal class MicProcessor(
+    @Volatile var gainPercent: Int,
+    @Volatile var gateThresholdDbfs: Float,
+    /** 0 = off. */
+    @Volatile var agcTargetDbfs: Int,
+) : AudioProcessorInterface {
+    private var gateGain = 1f
+    private var agcGain = 1f
+
+    override fun isEnabled(): Boolean = gainPercent != 100 || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
+    override fun getName(): String = "applooma-mic"
+    override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f }
+    override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f }
+
     override fun processAudio(numBands: Int, numFrames: Int, buffer: java.nio.ByteBuffer) {
-        val g = gainPercent / 100f
-        if (g == 1f) return
         val fb = buffer.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
         val n = numBands * numFrames
+        if (n == 0) return
+
+        var sum = 0.0
+        for (i in 0 until n) { val v = fb.get(i); sum += (v * v).toDouble() }
+        val levelDb = (20.0 * kotlin.math.log10(kotlin.math.sqrt(sum / n) + 1e-9)).toFloat()
+        val speaking = levelDb >= gateThresholdDbfs
+
+        // Gate: opens fast so the first syllable is not lost, closes slowly so
+        // a pause mid-sentence does not pump.
+        val gateTarget = if (speaking) 1f else GATE_FLOOR
+        gateGain += (gateTarget - gateGain) * (if (gateTarget > gateGain) 0.5f else 0.05f)
+
+        // AGC: only steers while someone is talking — silence is never lifted.
+        if (agcTargetDbfs != 0 && speaking) {
+            val wanted = Math.pow(10.0, ((agcTargetDbfs - levelDb) / 20.0).toDouble()).toFloat().coerceIn(AGC_MIN, AGC_MAX)
+            agcGain += (wanted - agcGain) * (if (wanted < agcGain) 0.3f else 0.02f)
+        } else if (agcTargetDbfs == 0) agcGain = 1f
+
+        val g = gateGain * agcGain * (gainPercent / 100f)
+        if (g == 1f) return
         for (i in 0 until n) {
             var y = fb.get(i) * g
             // Soft knee above ±0.8, hard ceiling at ±1: loud peaks compress instead of clip.
@@ -900,5 +947,12 @@ internal class MicGainProcessor(@Volatile var gainPercent: Int) : AudioProcessor
             fb.put(i, y)
         }
     }
-    private companion object { const val KNEE = 0.8f }
+
+    private companion object {
+        const val KNEE = 0.8f
+        /** -20 dB: noise is eased down, not muted, so the room never sounds "dead". */
+        const val GATE_FLOOR = 0.1f
+        const val AGC_MIN = 0.25f  // -12 dB
+        const val AGC_MAX = 8f     // +18 dB
+    }
 }
