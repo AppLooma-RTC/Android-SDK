@@ -99,7 +99,7 @@ class AppEngine private constructor(
 ) {
     private val mixer = MusicMixer(object : MusicMixer.Listener {
         override fun onMusicStateChanged(state: AppMusicState) { onMain { eventHandler?.onMusicStateChanged(state) } }
-        override fun onMusicFinished() { onMain { eventHandler?.onMusicFinished() } }
+        override fun onMusicFinished() { onMain { afterMusicEnded(); eventHandler?.onMusicFinished() } }
         override fun onMusicError(error: Throwable) { onMain { eventHandler?.onError(error) } }
     })
 
@@ -294,7 +294,36 @@ class AppEngine private constructor(
     // permission, publish rejected) is reported rather than thrown from a
     // coroutine, where it would crash the host application.
     fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged() }
-    fun enableMicrophone(on: Boolean) = launchSafely { room.localParticipant.setMicrophoneEnabled(on) }
+    /**
+     * Turn your microphone on or off. Music is independent of it: while a
+     * song is playing, muting sends silence in place of your voice but keeps
+     * the music going, so a host can mute themselves without the room going
+     * quiet. Once the music stops, a muted microphone becomes a real mute
+     * (nothing is sent). [isMicrophoneEnabled] reports what you asked for.
+     */
+    fun enableMicrophone(on: Boolean) = launchSafely {
+        micWanted = on
+        if (on) {
+            mixer.micMuted = false
+            room.localParticipant.setMicrophoneEnabled(true)
+        } else if (mixer.currentState != AppMusicState.STOPPED) {
+            // Music is playing: keep the capture track alive and silence the voice.
+            mixer.micMuted = true
+            if (!room.localParticipant.isMicrophoneEnabled()) room.localParticipant.setMicrophoneEnabled(true)
+        } else {
+            mixer.micMuted = false
+            room.localParticipant.setMicrophoneEnabled(false)
+        }
+    }
+
+    /** Whether you asked for the microphone to be on (what a mic button should show). */
+    val isMicrophoneEnabled: Boolean get() = micWanted
+    private var micWanted = true
+
+    /** Music ended or was stopped: a logically muted microphone now really mutes. */
+    private fun afterMusicEnded() {
+        if (!micWanted) launchSafely { mixer.micMuted = false; room.localParticipant.setMicrophoneEnabled(false) }
+    }
 
     /** Flip between the front and back cameras. Does nothing until the camera is on. */
     fun switchCamera() = launchSafely { (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.switchCamera(); notifyLocalVideoChanged() }
@@ -452,14 +481,25 @@ class AppEngine private constructor(
      * microphone; you hear it on this device. Any audio format the phone can
      * decode (mp3, aac/m4a, ogg, wav, flac). `path` is a local file path.
      *
+     * The music does not need your microphone: with the mic muted, the room
+     * hears the song and not you (since 0.4.5). Only a publisher can play —
+     * an audience member's call is ignored.
+     *
      * @param loops how many times to play; 0 = forever.
      * @param startMs where in the file to begin.
      */
     @JvmOverloads
-    fun playMusic(path: String, loops: Int = 1, startMs: Int = 0) = mixer.play(path, loops, startMs)
+    fun playMusic(path: String, loops: Int = 1, startMs: Int = 0) {
+        if (!micWanted) launchSafely {
+            // Music rides on the capture track; bring it up silently.
+            mixer.micMuted = true
+            if (!room.localParticipant.isMicrophoneEnabled()) room.localParticipant.setMicrophoneEnabled(true)
+        }
+        mixer.play(path, loops, startMs)
+    }
     fun pauseMusic() = mixer.pause()
     fun resumeMusic() = mixer.resume()
-    fun stopMusic() = mixer.stop()
+    fun stopMusic() { mixer.stop(); afterMusicEnded() }
     fun seekMusic(ms: Int) = mixer.seek(ms)
     /** Current position in milliseconds. */
     val musicPosition: Int get() = mixer.position
@@ -815,8 +855,11 @@ class AppEngine private constructor(
         lastRole = role
         val canPublish = room.localParticipant.permissions?.canPublish ?: (role != AppRole.AUDIENCE)
         if (role == AppRole.AUDIENCE || !canPublish) {
+            // Sent back to the audience: nothing of ours may play, music included.
+            mixer.stop(); mixer.micMuted = false; micWanted = false
             try { room.localParticipant.setMicrophoneEnabled(false); room.localParticipant.setCameraEnabled(false) } catch (_: Throwable) {}
         } else {
+            micWanted = true; mixer.micMuted = false
             try { room.localParticipant.setMicrophoneEnabled(true) } catch (t: Throwable) { eventHandler?.onError(t) }
         }
         eventHandler?.onRoleChanged(role)

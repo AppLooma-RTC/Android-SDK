@@ -54,6 +54,13 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
     @Volatile var playoutUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION
     /** Recording (microphone) gain, 0..400, 100 = unity. */
     @Volatile var recordingVolume: Int = 100
+    /**
+     * When set, the microphone samples are replaced with silence before mixing,
+     * so only the music reaches the room. This is how a muted microphone and
+     * playing music coexist: the capture track stays alive (music rides on it)
+     * while the person's voice does not. See AppEngine.enableMicrophone.
+     */
+    @Volatile var micMuted: Boolean = false
 
     @Volatile private var state: AppMusicState = AppMusicState.STOPPED
     private val paused = AtomicBoolean(false)
@@ -131,8 +138,9 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
         }
         formatKnown.set(true)
 
-        // Recording gain on the microphone itself, in place.
-        val gain = recordingVolume
+        // Recording gain on the microphone itself, in place — or silence, when
+        // the microphone is muted but the track is kept alive for the music.
+        val gain = if (micMuted) 0 else recordingVolume
         if (gain != 100 && bytesRead > 0) scaleInPlace(originalBuffer, bytesRead, gain / 100f)
 
         if (state != AppMusicState.PLAYING) return null
