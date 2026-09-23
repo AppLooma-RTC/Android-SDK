@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "applooma-rtc-android"
 include(":applooma-rtc")
+include(":applooma-uikit")
