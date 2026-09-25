@@ -154,6 +154,34 @@ class AppEngine private constructor(
     companion object {
         private const val TAG = "AppLoomaRTC"
 
+        @Volatile private var debugSink: ((String) -> Unit)? = null
+        private var debugTree: timber.log.Timber.Tree? = null
+
+        /**
+         * Route the engine's own diagnostic log (signaling, ICE, reconnects,
+         * track events) to [sink], one line per message, and turn its verbosity
+         * up. Meant for a "report a problem" feature: keep the last few hundred
+         * lines in memory and send them to your server when a room ends
+         * unexpectedly. Pass null to turn it off again.
+         */
+        @JvmStatic fun enableDebugLogging(sink: ((String) -> Unit)?) {
+            debugTree?.let { timber.log.Timber.uproot(it) }
+            debugTree = null
+            debugSink = sink
+            if (sink == null) { LiveKit.loggingLevel = io.livekit.android.util.LoggingLevel.WARN; return }
+            LiveKit.loggingLevel = io.livekit.android.util.LoggingLevel.VERBOSE
+            val tree = object : timber.log.Timber.Tree() {
+                override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
+                    val level = when (priority) { android.util.Log.ERROR -> "E"; android.util.Log.WARN -> "W"; android.util.Log.INFO -> "I"; android.util.Log.DEBUG -> "D"; else -> "V" }
+                    sink("$level/${tag ?: "engine"}: $message${t?.let { " — $it" } ?: ""}")
+                }
+            }
+            debugTree = tree
+            timber.log.Timber.plant(tree)
+        }
+
+        internal fun debug(line: String) { debugSink?.invoke("I/$TAG: $line") }
+
         /** Whether this phone has a hardware encoder for the given MIME type. */
         internal fun hasHardwareEncoder(mime: String): Boolean = try {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
@@ -242,8 +270,10 @@ class AppEngine private constructor(
         subscribeEvents()
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
+        debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=0.4.7 device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
         room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         isJoined = true
+        debug("connected localUid=$localUid")
         eventHandler?.onConnectionStage(AppConnectionStage.CONNECTED, null, elapsedSinceJoin())
 
         // Participants already in the room when we join never produce a
@@ -821,13 +851,15 @@ class AppEngine private constructor(
                         if (event.participant === room.localParticipant) notifyLocalVideoChanged()
                         else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) notifyLocalVideoChanged()
-                    is RoomEvent.Reconnecting -> eventHandler?.onReconnecting()
+                    is RoomEvent.Reconnecting -> { debug("reconnecting"); eventHandler?.onReconnecting() }
                     is RoomEvent.Reconnected -> {
+                        debug("reconnected")
                         users.clear()
                         seedExistingParticipants()
                         eventHandler?.onReconnected()
                     }
                     is RoomEvent.Disconnected -> {
+                        debug("disconnected reason=${event.reason?.name} error=${event.error}")
                         isJoined = false
                         mixer.stop()
                         statsJob?.cancel()

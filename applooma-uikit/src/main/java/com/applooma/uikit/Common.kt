@@ -42,7 +42,12 @@ class AppLoomaKit(
     val appId: String,
     val user: KitUser,
     val tokenProvider: suspend (room: String, role: String, user: KitUser) -> KitToken,
-)
+) {
+    /** Java-friendly: a blocking [TokenProvider], run on a background thread. */
+    constructor(appId: String, user: KitUser, provider: TokenProvider) : this(appId, user, { room, role, u ->
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { provider.getToken(room, role, u) }
+    })
+}
 
 internal fun formatTime(sec: Long) = "%02d:%02d".format(sec / 60, sec % 60)
 

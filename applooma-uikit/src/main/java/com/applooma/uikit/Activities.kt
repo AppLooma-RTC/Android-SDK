@@ -9,8 +9,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * A token provider for Java callers: runs on a background thread, so it may
@@ -20,10 +18,6 @@ fun interface TokenProvider {
     @Throws(Exception::class)
     fun getToken(room: String, role: String, user: KitUser): KitToken
 }
-
-/** Java-friendly constructor: a blocking [TokenProvider] instead of a suspend lambda. */
-fun AppLoomaKit(appId: String, user: KitUser, provider: TokenProvider): AppLoomaKit =
-    AppLoomaKit(appId, user) { room, role, u -> withContext(Dispatchers.IO) { provider.getToken(room, role, u) } }
 
 /**
  * Ready-made screens as Activities, for apps that are not written in Compose
