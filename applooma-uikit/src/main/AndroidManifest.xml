@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <application>
+        <activity android:name=".LiveStreamActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".VoiceRoomActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".CallActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden" />
+    </application>
+</manifest>
