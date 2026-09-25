@@ -945,9 +945,18 @@ internal class MicProcessor(
     override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f }
 
     override fun processAudio(numBands: Int, numFrames: Int, buffer: java.nio.ByteBuffer) {
+        // Never let an exception escape into the native audio thread: the
+        // engine aborts the whole process on it (seen on realme/vivo, Android 16).
+        try { process(numBands, numFrames, buffer) } catch (_: Throwable) {}
+    }
+
+    private fun process(numBands: Int, numFrames: Int, buffer: java.nio.ByteBuffer) {
         val fb = buffer.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-        val n = numBands * numFrames
-        if (n == 0) return
+        // Real devices report numBands = 3 for the 48 kHz band split while the
+        // buffer holds only the full-band samples (480 floats per 10 ms), so the
+        // product overshoots the buffer; the buffer's own limit is the truth.
+        val n = minOf(numBands * numFrames, fb.limit())
+        if (n <= 0) return
 
         var sum = 0.0
         for (i in 0 until n) { val v = fb.get(i); sum += (v * v).toDouble() }
