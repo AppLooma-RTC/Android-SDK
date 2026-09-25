@@ -4,7 +4,7 @@ Drop-in Jetpack Compose screens: **live streaming**, **voice room**, **1-to-1 ca
 
 ```kotlin
 // settings.gradle.kts → repositories { google(); mavenCentral(); maven { url = uri("https://jitpack.io") } }
-implementation("com.applooma:uikit-android:0.1.0")
+implementation("com.applooma:uikit-android:0.2.0")
 ```
 
 ```kotlin
@@ -19,3 +19,18 @@ AppLoomaCall(kit, room = "call-abc", video = true, onLeave = { finish() })
 ```
 
 The screens ask for camera and microphone permission when they join.
+
+## From Java (or any non-Compose app)
+
+```java
+AppLoomaUiKit.setup(new AppLoomaKit("YOUR_APP_ID", new KitUser(me.id, me.name, null), (room, role, user) -> {
+    MyApi.Token t = myApi.rtcToken(room, role, user.getId(), user.getName());   // YOUR server, runs on a background thread
+    return new KitToken(t.token, t.wsUrl);
+}));
+
+AppLoomaUiKit.openLiveStream(this, "show-42", "host");
+AppLoomaUiKit.openVoiceRoom(this, "party-7", 8);
+AppLoomaUiKit.openCall(this, "call-abc", true);
+```
+
+Each call opens a full-screen Activity; it finishes itself when the user leaves.
