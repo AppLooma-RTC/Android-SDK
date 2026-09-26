@@ -193,7 +193,7 @@ class AppEngine private constructor(
 
         /**
          * Whether this phone has an H.264 hardware encoder the engine can actually
-         * drive. The engine only uses Qualcomm and Exynos H.264 encoders; on other
+         * drive. The engine only uses OMX.qcom./OMX.Exynos. H.264 encoders; on other
          * chipsets (MediaTek, Unisoc, …) it would fall through to a software H.264
          * encoder that does not exist on Android, and the camera track is
          * published but never carries a frame — viewers see black. Seen on
@@ -205,7 +205,10 @@ class AppEngine private constructor(
                     H264_HW_PREFIXES.any { info.name.startsWith(it, ignoreCase = true) }
             }
         } catch (_: Throwable) { false }
-        private val H264_HW_PREFIXES = arrayOf("OMX.qcom.", "c2.qti.", "OMX.Exynos.", "c2.exynos.")
+        // Exactly the prefixes the engine's hardware encoder factory accepts for
+        // H.264 (checked against its bytecode: OMX.qcom. and OMX.Exynos. only —
+        // not the Codec2 names, not Intel, not MediaTek).
+        private val H264_HW_PREFIXES = arrayOf("OMX.qcom.", "OMX.Exynos.")
 
         /** The codec actually published for a config on this phone, after AUTO is resolved. */
         internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
