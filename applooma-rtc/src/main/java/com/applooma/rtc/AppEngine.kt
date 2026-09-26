@@ -191,14 +191,36 @@ class AppEngine private constructor(
             }
         } catch (_: Throwable) { false }
 
+        /**
+         * Whether this phone has an H.264 hardware encoder the engine can actually
+         * drive. The engine only uses Qualcomm and Exynos H.264 encoders; on other
+         * chipsets (MediaTek, Unisoc, …) it would fall through to a software H.264
+         * encoder that does not exist on Android, and the camera track is
+         * published but never carries a frame — viewers see black. Seen on
+         * realme RMX3941 (Helio G85) and Infinix X6532C.
+         */
+        internal fun hasUsableH264Encoder(): Boolean = try {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+                info.isEncoder && info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) } &&
+                    H264_HW_PREFIXES.any { info.name.startsWith(it, ignoreCase = true) }
+            }
+        } catch (_: Throwable) { false }
+        private val H264_HW_PREFIXES = arrayOf("OMX.qcom.", "c2.qti.", "OMX.Exynos.", "c2.exynos.")
+
         /** The codec actually published for a config on this phone, after AUTO is resolved. */
         internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
             AppVideoCodec.VP8 -> "vp8"
-            AppVideoCodec.H264 -> "h264"
-            // Hardware VP8 (Exynos, MediaTek, most Samsung) → VP8. No hardware
-            // VP8 (budget Qualcomm) → H.264 in hardware rather than VP8 on the
-            // CPU, which at 720p/30 + simulcast drops frames and starves audio.
-            AppVideoCodec.AUTO -> if (hasHardwareEncoder("video/x-vnd.on2.vp8")) "vp8" else "h264"
+            // An explicit H.264 request still cannot be honoured where no usable
+            // encoder exists; VP8 (software if need be) beats a black stream.
+            AppVideoCodec.H264 -> if (hasUsableH264Encoder()) "h264" else "vp8".also { android.util.Log.w(TAG, "No usable H.264 hardware encoder on this phone; publishing VP8") }
+            // Hardware VP8 (Exynos, most Samsung) → VP8. Otherwise H.264 in
+            // hardware where the engine supports the encoder (Qualcomm, Exynos),
+            // and VP8 on the CPU everywhere else (MediaTek without VP8 hardware).
+            AppVideoCodec.AUTO -> when {
+                hasHardwareEncoder("video/x-vnd.on2.vp8") -> "vp8"
+                hasUsableH264Encoder() -> "h264"
+                else -> "vp8"
+            }
         }
 
         private fun roomOptions(o: AppEngineOptions): RoomOptions {
