@@ -27,26 +27,84 @@ enum class AppAudioScenario { CALL, MEDIA }
  * always with a VP8 backup layer so a viewer that cannot decode H.264 still
  * gets a picture. Force one only for a known fleet.
  */
-enum class AppVideoCodec { AUTO, VP8, H264 }
+enum class AppVideoCodec {
+    AUTO, VP8, H264,
+    /**
+     * H.265 is not available on Android: the engine's encoder factory does not
+     * drive H.265 hardware. Falls back to AUTO with a warning; kept so one
+     * config compiles on every platform.
+     */
+    H265,
+    /**
+     * AV1, only where the phone has a hardware AV1 encoder (a few 2023+ flagship
+     * chipsets); everywhere else it falls back to AUTO with a warning. Always
+     * with a VP8 backup layer.
+     */
+    AV1,
+}
+
+/**
+ * What the encoder gives up first when the network or the CPU cannot carry
+ * the full picture.
+ *
+ * AUTO (default) is the engine's choice for a camera — frame rate is kept and
+ * resolution drops, which looks smoothest in a call. KEEP_RESOLUTION keeps the
+ * picture sharp and drops frames instead — for a 1080p broadcast where
+ * crispness is the product. KEEP_FRAMERATE keeps motion smooth and lets the
+ * picture soften. BALANCED gives up a little of each.
+ */
+enum class AppVideoDegradation { AUTO, KEEP_RESOLUTION, KEEP_FRAMERATE, BALANCED }
 
 /**
  * Capture and encode settings for your own camera.
  *
  * `maxBitrate` is in **bits per second** — `1_900_000` for 1.9 Mbps. A value
  * under 10 000 is almost certainly kbps by mistake and is logged as a warning.
- * `height` must be one of 360 / 540 / 720 / 1080; anything else snaps to the
- * nearest preset (also logged).
+ * `height` must be one of 360 / 540 / 720 / 1080 / 1440; anything else snaps
+ * to the nearest preset (also logged).
+ *
+ * With `maxBitrate` 0 the cap is 5 Mbps at 1440p, 4 Mbps at 1080p, 2.2 Mbps
+ * at 720p, and the preset default below that.
  */
 data class AppVideoConfig @JvmOverloads constructor(
-    /** 360, 540, 720 or 1080 — the short edge of a 16:9 frame. */
+    /** 360, 540, 720, 1080 or 1440 — the short edge of a 16:9 frame. */
     val height: Int = 1080,
     val fps: Int = 30,
-    /** Cap on the encoder's bitrate in bits per second (e.g. 1_900_000); 0 = the preset's default. */
+    /** Cap on the encoder's bitrate in bits per second (e.g. 1_900_000); 0 = our default for the height. */
     val maxBitrate: Int = 0,
     /** Three layers so weak links still get a picture. Off = one layer only. */
     val simulcast: Boolean = true,
-    /** VP8, H.264, or let the engine choose per phone. */
+    /** VP8, H.264, AV1, or let the engine choose per phone. */
     val codec: AppVideoCodec = AppVideoCodec.AUTO,
+    /** What to give up first under pressure. See [AppVideoDegradation]. Since 0.4.10. */
+    val degradation: AppVideoDegradation = AppVideoDegradation.AUTO,
+    /**
+     * Floor on the encoder's bitrate in bits per second; 0 = engine default.
+     * Reserved: the engine exposes no per-sender minimum on Android today, so
+     * the value is kept but does not change what is sent. Since 0.4.10.
+     */
+    val minBitrate: Int = 0,
+)
+
+/** Which of your simulcast layers the numbers in [AppVideoQualityInfo] describe. */
+enum class AppVideoLayer { HIGH, MEDIUM, LOW }
+
+/** Why the encoder is not sending the full picture, when it is not. */
+enum class AppVideoQualityReason { BANDWIDTH, CPU, NONE }
+
+/**
+ * What your own camera is actually sending right now — the top layer that
+ * carries frames, its size, rate and bitrate, and why it is not the full
+ * picture if it is not. Delivered by [AppEventHandler.onVideoQualityChanged]
+ * whenever any of it changes while the camera is on.
+ */
+data class AppVideoQualityInfo(
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+    val bitrateKbps: Int,
+    val layer: AppVideoLayer,
+    val reason: AppVideoQualityReason,
 )
 
 /**
@@ -144,6 +202,16 @@ enum class AppMusicState { STOPPED, PLAYING, PAUSED }
 
 /** Who is speaking and how loudly, 0..1. */
 data class AppSpeaker(val uid: String, val level: Float)
+
+/**
+ * Where the call's audio is going. A Bluetooth headset, when connected and
+ * permitted, wins by default; then a wired headset; then the loudspeaker
+ * (MEDIA) or the earpiece (CALL). See [AppEngine.setAudioRoute].
+ *
+ * On Android 12 and above the app must hold `BLUETOOTH_CONNECT` at runtime
+ * for [BLUETOOTH] to appear at all — request it next to `RECORD_AUDIO`.
+ */
+enum class AppAudioRoute { BLUETOOTH, WIRED_HEADSET, EARPIECE, SPEAKER }
 
 /** Link quality for one participant, as the media server measures it. */
 enum class AppNetworkQuality { EXCELLENT, GOOD, POOR, LOST, UNKNOWN }
@@ -325,6 +393,18 @@ abstract class AppEventHandler {
     open fun onConnectionStage(stage: AppConnectionStage, uid: String?, elapsedMs: Long) {}
     /** Per-remote-user media health, every two seconds while joined (see [AppRemoteStats]). */
     open fun onRemoteStats(stats: List<AppRemoteStats>) {}
+    /**
+     * The size, rate or layer your own camera is sending changed — the encoder
+     * stepped down for the network or the CPU, or came back up. Checked every
+     * two seconds while your camera is on. Since 0.4.10.
+     */
+    open fun onVideoQualityChanged(quality: AppVideoQualityInfo) {}
+    /**
+     * The audio route changed — a headset was plugged in or paired, taken off,
+     * or [AppEngine.setAudioRoute] was called. `route` is null while nothing is
+     * selected yet; `available` is what [AppEngine.getAudioRoutes] returns now.
+     */
+    open fun onAudioRouteChanged(route: AppAudioRoute?, available: List<AppAudioRoute>) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */

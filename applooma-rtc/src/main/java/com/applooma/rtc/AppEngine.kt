@@ -137,7 +137,53 @@ class AppEngine private constructor(
             ),
         ),
     ).also { mixer.playoutUsage = if (options.audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
+    private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    init { configureAudioRouting() }
+
+    /**
+     * Tell the engine's device switcher what to pick when nothing was chosen by
+     * hand: a Bluetooth headset first, then a wired one, then the loudspeaker
+     * (MEDIA) or the earpiece (CALL). The switcher is built when the room
+     * connects, so this must be set before joinChannel — it is, at create time.
+     * Every device change (headset paired, unplugged, SCO dropped) re-evaluates
+     * the list and is reported through [AppEventHandler.onAudioRouteChanged].
+     */
+    private fun configureAudioRouting() {
+        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return
+        val tail = if (options.audioScenario == AppAudioScenario.MEDIA)
+            listOf(com.twilio.audioswitch.AudioDevice.Speakerphone::class.java, com.twilio.audioswitch.AudioDevice.Earpiece::class.java)
+        else
+            listOf(com.twilio.audioswitch.AudioDevice.Earpiece::class.java, com.twilio.audioswitch.AudioDevice.Speakerphone::class.java)
+        handler.preferredDeviceList = listOf(
+            com.twilio.audioswitch.AudioDevice.BluetoothHeadset::class.java,
+            com.twilio.audioswitch.AudioDevice.WiredHeadset::class.java,
+        ) + tail
+        handler.audioDeviceChangeListener = { devices, selected ->
+            val available = devices.map { it.toRoute() }.distinct()
+            val route = selected?.toRoute()
+            debug("audio route=$route available=$available")
+            onMain { eventHandler?.onAudioRouteChanged(route, available) }
+        }
+    }
+
+    private fun com.twilio.audioswitch.AudioDevice.toRoute(): AppAudioRoute = when (this) {
+        is com.twilio.audioswitch.AudioDevice.BluetoothHeadset -> AppAudioRoute.BLUETOOTH
+        is com.twilio.audioswitch.AudioDevice.WiredHeadset -> AppAudioRoute.WIRED_HEADSET
+        is com.twilio.audioswitch.AudioDevice.Earpiece -> AppAudioRoute.EARPIECE
+        else -> AppAudioRoute.SPEAKER
+    }
+
+    /**
+     * Android 12+ hides Bluetooth SCO headsets from the device switcher unless
+     * the app holds BLUETOOTH_CONNECT at runtime. Not fatal — the call still
+     * works on the phone's own speaker/earpiece — but worth a loud log line,
+     * because "my earbuds are silent" is the whole symptom.
+     */
+    private fun hasBluetoothPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
     private var eventsJob: Job? = null
     private var statsJob: Job? = null
     private val users = LinkedHashMap<String, AppRemoteUser>()
@@ -213,6 +259,10 @@ class AppEngine private constructor(
         /** The codec actually published for a config on this phone, after AUTO is resolved. */
         internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
             AppVideoCodec.VP8 -> "vp8"
+            // The engine's encoder factory has no H.265 path on Android.
+            AppVideoCodec.H265 -> resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "AppVideoCodec.H265 is not available on Android; publishing $it") }
+            // AV1 only where the chipset encodes it; software AV1 at camera sizes would starve the CPU.
+            AppVideoCodec.AV1 -> if (hasHardwareEncoder("video/av01")) "av1" else resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "No AV1 hardware encoder on this phone; publishing $it") }
             // An explicit H.264 request still cannot be honoured where no usable
             // encoder exists; VP8 (software if need be) beats a black stream.
             AppVideoCodec.H264 -> if (hasUsableH264Encoder()) "h264" else "vp8".also { android.util.Log.w(TAG, "No usable H.264 hardware encoder on this phone; publishing VP8") }
@@ -226,21 +276,35 @@ class AppEngine private constructor(
             }
         }
 
+        private val HEIGHTS = intArrayOf(360, 540, 720, 1080, 1440)
+        internal fun snapHeight(wanted: Int): Int = HEIGHTS.minByOrNull { kotlin.math.abs(it - wanted) } ?: 1080
+
+        /** `AUTO` leaves the engine's per-source default (frame rate first for a camera). */
+        private fun degradationOf(d: AppVideoDegradation): livekit.org.webrtc.RtpParameters.DegradationPreference? = when (d) {
+            AppVideoDegradation.KEEP_RESOLUTION -> livekit.org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+            AppVideoDegradation.KEEP_FRAMERATE -> livekit.org.webrtc.RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
+            AppVideoDegradation.BALANCED -> livekit.org.webrtc.RtpParameters.DegradationPreference.BALANCED
+            AppVideoDegradation.AUTO -> null
+        }
+
         private fun roomOptions(o: AppEngineOptions): RoomOptions {
-            val heights = intArrayOf(360, 540, 720, 1080)
-            val height = heights.minByOrNull { kotlin.math.abs(it - o.video.height) } ?: 1080
+            val height = snapHeight(o.video.height)
             if (height != o.video.height) android.util.Log.w(TAG, "AppVideoConfig.height=${o.video.height} is not a preset; using ${height}p")
             val preset = when (height) {
                 360 -> VideoPreset169.H360
                 540 -> VideoPreset169.H540
                 720 -> VideoPreset169.H720
+                1440 -> VideoPreset169.H1440
                 else -> VideoPreset169.H1080
             }
             if (o.video.maxBitrate in 1 until 10_000)
                 android.util.Log.w(TAG, "AppVideoConfig.maxBitrate=${o.video.maxBitrate} is in bits per second — did you mean ${o.video.maxBitrate}_000 (kbps)?")
-            val encoding = if (o.video.maxBitrate > 0 || o.video.fps != 30)
-                VideoEncoding(maxBitrate = if (o.video.maxBitrate > 0) o.video.maxBitrate else preset.encoding.maxBitrate, maxFps = o.video.fps)
-            else preset.encoding
+            // Our own caps for the sharp end: the preset defaults were tuned for
+            // calls and leave 1080p visibly soft on a good link. 540p and below
+            // keep theirs. minBitrate: the engine's encoding carries no floor on
+            // Android, so AppVideoConfig.minBitrate is not applied here.
+            val defaultMaxBitrate = when (height) { 1440 -> 5_000_000; 1080 -> 4_000_000; 720 -> 2_200_000; else -> preset.encoding.maxBitrate }
+            val encoding = VideoEncoding(maxBitrate = if (o.video.maxBitrate > 0) o.video.maxBitrate else defaultMaxBitrate, maxFps = o.video.fps)
             val codec = resolveCodec(o.video.codec)
             return RoomOptions(
                 // Adaptive stream still down-shifts a remote layer for a small or
@@ -255,11 +319,12 @@ class AppEngine private constructor(
                     videoEncoding = encoding,
                     simulcast = o.video.simulcast,
                     videoCodec = codec,
-                    // When H.264 is published, a VP8 layer rides along as backup:
-                    // a viewer whose phone cannot decode the H.264 stream (or a
-                    // hardware encoder that emits something only it can read) is
-                    // served VP8 by the server instead of a black frame.
-                    backupCodec = if (codec == "h264") BackupVideoCodec(codec = "vp8", encoding = encoding, simulcast = o.video.simulcast) else null,
+                    // Anything but VP8 rides with a VP8 backup layer: a viewer
+                    // whose phone cannot decode the main stream (or a hardware
+                    // encoder that emits something only it can read) is served
+                    // VP8 by the server instead of a black frame.
+                    backupCodec = if (codec != "vp8") BackupVideoCodec(codec = "vp8", encoding = encoding, simulcast = o.video.simulcast) else null,
+                    degradationPreference = degradationOf(o.video.degradation),
                 ),
                 audioTrackCaptureDefaults = LocalAudioTrackOptions(
                     noiseSuppression = o.audio.noiseSuppression,
@@ -296,6 +361,9 @@ class AppEngine private constructor(
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
         debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=0.4.7 device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
+        if (!hasBluetoothPermission()) {
+            android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
+        }
         room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         isJoined = true
         debug("connected localUid=$localUid")
@@ -386,14 +454,43 @@ class AppEngine private constructor(
 
     /**
      * Route audio to the loudspeaker (true) or the earpiece (false).
-     * A wired or Bluetooth headset, when present, keeps priority either way.
+     * A wired or Bluetooth headset, when present, keeps priority either way:
+     * this only decides which of the phone's own outputs to use when no
+     * headset is connected. To force a specific output use [setAudioRoute].
      */
     fun setSpeakerphone(on: Boolean) {
-        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return
-        val wanted = handler.availableAudioDevices.firstOrNull {
-            if (on) it is com.twilio.audioswitch.AudioDevice.Speakerphone else it is com.twilio.audioswitch.AudioDevice.Earpiece
-        } ?: return
+        val routes = getAudioRoutes()
+        val headset = routes.firstOrNull { it == AppAudioRoute.BLUETOOTH || it == AppAudioRoute.WIRED_HEADSET }
+        setAudioRoute(headset ?: if (on) AppAudioRoute.SPEAKER else AppAudioRoute.EARPIECE)
+    }
+
+    /**
+     * The outputs that can be selected right now, best first: a Bluetooth
+     * headset (when paired and, on Android 12+, `BLUETOOTH_CONNECT` is granted),
+     * a wired headset, then the speaker and earpiece. Empty before the first
+     * join — the switcher starts with the connection.
+     */
+    fun getAudioRoutes(): List<AppAudioRoute> {
+        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return emptyList()
+        return handler.availableAudioDevices.map { it.toRoute() }.distinct()
+    }
+
+    /** The output audio is going to right now, or null before the first join. */
+    val currentAudioRoute: AppAudioRoute?
+        get() = (room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler)?.selectedAudioDevice?.toRoute()
+
+    /**
+     * Send audio to one specific output — for an in-call route picker
+     * ("Phone / Speaker / AirPods"). Returns false when that output is not in
+     * [getAudioRoutes] (nothing changes). A manual choice sticks until the
+     * device disappears, after which the automatic order applies again;
+     * [AppEventHandler.onAudioRouteChanged] reports every change.
+     */
+    fun setAudioRoute(route: AppAudioRoute): Boolean {
+        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return false
+        val wanted = handler.availableAudioDevices.firstOrNull { it.toRoute() == route } ?: return false
         handler.selectDevice(wanted)
+        return true
     }
 
     /**
@@ -425,7 +522,8 @@ class AppEngine private constructor(
         lp.videoTrackCaptureDefaults = ro.videoTrackCaptureDefaults ?: lp.videoTrackCaptureDefaults
         lp.videoTrackPublishDefaults = ro.videoTrackPublishDefaults ?: lp.videoTrackPublishDefaults
         val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
-        val republish = config.maxBitrate != previous.maxBitrate || config.simulcast != previous.simulcast
+        val republish = config.maxBitrate != previous.maxBitrate || config.simulcast != previous.simulcast ||
+            config.codec != previous.codec || config.degradation != previous.degradation
         if (republish) {
             lp.setCameraEnabled(false)
             lp.setCameraEnabled(true)
@@ -713,7 +811,7 @@ class AppEngine private constructor(
     fun setAgcTargetLevel(dbfs: Int) { micGain.agcTargetDbfs = dbfs.coerceIn(-40, 0) }
     val agcTargetLevelDbfs: Int get() = micGain.agcTargetDbfs
 
-    /** The codec this phone publishes with, after AUTO is resolved: "vp8" or "h264". */
+    /** The codec this phone publishes with, after AUTO (or an unavailable choice) is resolved: "vp8", "h264" or "av1". */
     val publishedCodec: String get() = resolveCodec(options.video.codec)
 
     /** Fires onFirstRemoteVideoFrame once per remote user per join, then detaches. */
@@ -770,6 +868,9 @@ class AppEngine private constructor(
                     )
                     prevOutSent = outSent; prevOutLost = outLost; prevInRecv = inRecv; prevInLost = inLost; prevBytesOut = bytesOut; prevBytesIn = bytesIn; prevAt = now
                     eventHandler?.onStats(stats)
+                    // What our own camera is sending: the top simulcast layer
+                    // that carries frames, reported only when it changes.
+                    if (localVideoTrack != null) reportLocalQuality(reports[0], secs) else { lastQuality = null; lastVideoBytes = 0L }
                     // Belt and braces for self-views: if the local track was swapped
                     // by a path that raised no event, the next tick re-binds it.
                     if (localVideoTrack !== lastLocalTrack) notifyLocalVideoChanged()
@@ -779,6 +880,43 @@ class AppEngine private constructor(
                 } catch (_: Throwable) { /* stats are best effort */ }
             }
         }
+    }
+
+    private var lastQuality: AppVideoQualityInfo? = null
+    private var lastVideoBytes = 0L
+
+    private fun reportLocalQuality(report: livekit.org.webrtc.RTCStatsReport?, secs: Double) {
+        val video = report?.statsMap?.values
+            ?.filter { it.type == "outbound-rtp" && (it.members["kind"] ?: it.members["mediaType"]) == "video" }
+            ?: return
+        if (video.isEmpty()) return
+        val bytes = video.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0L }
+        val kbps = if (lastVideoBytes > 0) (((bytes - lastVideoBytes).coerceAtLeast(0) * 8) / secs / 1000).toInt() else 0
+        lastVideoBytes = bytes
+        val active = video.filter { ((it.members["framesPerSecond"] as? Number)?.toDouble() ?: 0.0) > 0 && ((it.members["frameHeight"] as? Number)?.toInt() ?: 0) > 0 }
+        val top = active.maxByOrNull { (it.members["frameHeight"] as? Number)?.toInt() ?: 0 } ?: return
+        val m = top.members
+        val h = (m["frameHeight"] as? Number)?.toInt() ?: 0
+        val configured = snapHeight(videoConfig.height)
+        val layer = when (m["rid"] as? String) {
+            "f" -> AppVideoLayer.HIGH
+            "h" -> AppVideoLayer.MEDIUM
+            "q" -> AppVideoLayer.LOW
+            else -> if (h >= configured * 0.75) AppVideoLayer.HIGH else if (h >= configured * 0.4) AppVideoLayer.MEDIUM else AppVideoLayer.LOW
+        }
+        val q = AppVideoQualityInfo(
+            width = (m["frameWidth"] as? Number)?.toInt() ?: 0,
+            height = h,
+            fps = ((m["framesPerSecond"] as? Number)?.toDouble() ?: 0.0).toInt(),
+            bitrateKbps = kbps,
+            layer = layer,
+            reason = when (m["qualityLimitationReason"] as? String) { "bandwidth" -> AppVideoQualityReason.BANDWIDTH; "cpu" -> AppVideoQualityReason.CPU; else -> AppVideoQualityReason.NONE },
+        )
+        val prev = lastQuality
+        lastQuality = q
+        if (prev == null) return // the first sample is the baseline, not a change
+        val same = prev.width == q.width && prev.height == q.height && prev.layer == q.layer && prev.reason == q.reason && kotlin.math.abs(prev.fps - q.fps) < 5
+        if (!same) eventHandler?.onVideoQualityChanged(q)
     }
 
     private suspend fun trackStats(track: Track?): livekit.org.webrtc.RTCStatsReport? {

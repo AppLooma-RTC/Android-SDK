@@ -45,15 +45,21 @@ internal val AppRemoteUser.name: String get() = (attributes["name"] as? String) 
 @Composable
 internal fun RequestPermissions(camera: Boolean, onDenied: () -> Unit, onGranted: suspend () -> Unit) {
     val context = LocalContext.current
-    val wanted = remember(camera) {
+    // Microphone (and camera) are required. BLUETOOTH_CONNECT is asked for in
+    // the same dialog on Android 12+ — without it the engine cannot route to
+    // Bluetooth headsets — but a refusal is not a reason to block the join.
+    val required = remember(camera) {
         if (camera) arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA)
         else arrayOf(android.Manifest.permission.RECORD_AUDIO)
+    }
+    val wanted = remember(camera) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) required + android.Manifest.permission.BLUETOOTH_CONNECT else required
     }
     var granted by remember {
         mutableStateOf(wanted.all { androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED })
     }
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        if (r.values.all { it }) granted = true else onDenied()
+        if (required.all { r[it] == true }) granted = true else onDenied()
     }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(wanted) }
     LaunchedEffect(granted) { if (granted) onGranted() }
