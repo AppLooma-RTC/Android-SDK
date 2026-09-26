@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Hardware video encoding on MediaTek, Unisoc, HiSilicon, Intel and Codec2-only Qualcomm chipsets. The SDK now ships its own video encoder factory: it enumerates the phone's MediaCodec encoders and drives any hardware H.264, VP8, VP9, AV1 or H.265 encoder from a known vendor (on Android 10+ any encoder the platform flags as hardware-accelerated), instead of only the two vendor prefixes the previous factory accepted. Phones such as the realme RMX3941 (Helio G85) and Infinix X6532C, which used to fall back to software VP8, now publish hardware H.264 at 720p/1080p. A hardware encoder that fails to start falls back to the software encoder for that codec (VP8/VP9/AV1) per simulcast layer.
+- `AppVideoCodec.AUTO` now prefers hardware H.264, then hardware VP8, then software VP8. Every codec but VP8 still carries the VP8 backup layer.
+- One EGL context is shared by the encoder, the decoders and every `AppVideoView` for the life of the process (rooms no longer create and release their own).
+- `enableDebugLogging` prints the encoder chosen for the published codec at join (`video codec=h264 encoder=… mime=… hardware=…`).
+
 ## rtc-android 0.4.10
 
 - `AppVideoConfig.degradation` — `AppVideoDegradation.KEEP_RESOLUTION` / `KEEP_FRAMERATE` / `BALANCED` / `AUTO` (what the encoder gives up first under pressure), applied through the engine's publish defaults; `AppVideoConfig.minBitrate` (reserved — the engine exposes no per-sender floor on Android yet).

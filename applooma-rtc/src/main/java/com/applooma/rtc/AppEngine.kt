@@ -111,6 +111,13 @@ class AppEngine private constructor(
         context.applicationContext,
         options = roomOptions(options),
         overrides = LiveKitOverrides(
+            // Our own encoder factory: hardware H.264/VP8/H.265 on MediaTek,
+            // Unisoc, HiSilicon and Codec2-only Qualcomm phones too, not just
+            // the two vendors the engine's stock factory accepts. It shares one
+            // EGL context with the engine (decoders and renderers included), so
+            // camera textures reach the encoder without a copy.
+            videoEncoderFactory = AppLoomaVideoEncoderFactory(sharedEgl.eglBaseContext),
+            eglBase = sharedEgl,
             audioOptions = AudioOptions(
                 // MEDIA keeps media attributes (loudspeaker, media volume keys,
                 // music-grade bandwidth) but runs in the communication audio
@@ -238,40 +245,43 @@ class AppEngine private constructor(
         } catch (_: Throwable) { false }
 
         /**
-         * Whether this phone has an H.264 hardware encoder the engine can actually
-         * drive. The engine only uses OMX.qcom./OMX.Exynos. H.264 encoders; on other
-         * chipsets (MediaTek, Unisoc, …) it would fall through to a software H.264
-         * encoder that does not exist on Android, and the camera track is
-         * published but never carries a frame — viewers see black. Seen on
-         * realme RMX3941 (Helio G85) and Infinix X6532C.
+         * One EGL context for the whole process: the engine's decoders and
+         * renderers, and our encoder factory, all share it (a texture from the
+         * camera reaches the hardware encoder without a copy). Passed to every
+         * room as an override, so the engine does not release it when a room
+         * closes — it lives as long as the app.
          */
-        internal fun hasUsableH264Encoder(): Boolean = try {
-            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-                info.isEncoder && info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) } &&
-                    H264_HW_PREFIXES.any { info.name.startsWith(it, ignoreCase = true) }
-            }
-        } catch (_: Throwable) { false }
-        // Exactly the prefixes the engine's hardware encoder factory accepts for
-        // H.264 (checked against its bytecode: OMX.qcom. and OMX.Exynos. only —
-        // not the Codec2 names, not Intel, not MediaTek).
-        private val H264_HW_PREFIXES = arrayOf("OMX.qcom.", "OMX.Exynos.")
+        private val sharedEgl: livekit.org.webrtc.EglBase by lazy { livekit.org.webrtc.EglBase.create() }
+
+        /**
+         * Whether this phone has an H.264 hardware encoder our factory can drive
+         * ([AppLoomaVideoEncoderFactory]). There is no software H.264 encoder on
+         * Android, so without one an H.264 track is published but never carries a
+         * frame — viewers see black. The engine's stock factory only took
+         * OMX.qcom./OMX.Exynos.; ours also takes MediaTek, Unisoc, HiSilicon,
+         * Intel and the Codec2 names (realme RMX3941, Infinix X6532C, Snapdragon
+         * phones exposing only c2.qti.).
+         */
+        internal fun hasUsableH264Encoder(): Boolean = AppLoomaVideoEncoderFactory.findHardwareEncoder("video/avc") != null
 
         /** The codec actually published for a config on this phone, after AUTO is resolved. */
         internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
             AppVideoCodec.VP8 -> "vp8"
-            // The engine's encoder factory has no H.265 path on Android.
+            // The engine has no H.265 publish path on Android yet (our factory
+            // already exposes a hardware H.265 encoder for when it does).
             AppVideoCodec.H265 -> resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "AppVideoCodec.H265 is not available on Android; publishing $it") }
             // AV1 only where the chipset encodes it; software AV1 at camera sizes would starve the CPU.
             AppVideoCodec.AV1 -> if (hasHardwareEncoder("video/av01")) "av1" else resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "No AV1 hardware encoder on this phone; publishing $it") }
             // An explicit H.264 request still cannot be honoured where no usable
             // encoder exists; VP8 (software if need be) beats a black stream.
             AppVideoCodec.H264 -> if (hasUsableH264Encoder()) "h264" else "vp8".also { android.util.Log.w(TAG, "No usable H.264 hardware encoder on this phone; publishing VP8") }
-            // Hardware VP8 (Exynos, most Samsung) → VP8. Otherwise H.264 in
-            // hardware where the engine supports the encoder (Qualcomm, Exynos),
-            // and VP8 on the CPU everywhere else (MediaTek without VP8 hardware).
+            // Hardware H.264 wherever our factory has an encoder for it (every
+            // phone chipset made this decade), hardware VP8 where there is no
+            // H.264 hardware, and VP8 on the CPU as the last resort. Anything
+            // but VP8 keeps the VP8 backup layer (see roomOptions).
             AppVideoCodec.AUTO -> when {
-                hasHardwareEncoder("video/x-vnd.on2.vp8") -> "vp8"
                 hasUsableH264Encoder() -> "h264"
+                AppLoomaVideoEncoderFactory.findHardwareEncoder("video/x-vnd.on2.vp8") != null -> "vp8"
                 else -> "vp8"
             }
         }
@@ -361,6 +371,7 @@ class AppEngine private constructor(
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
         debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=0.4.7 device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
+        publishedCodec.let { debug("video codec=$it ${AppLoomaVideoEncoderFactory.describe(it)}") }
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
         }
