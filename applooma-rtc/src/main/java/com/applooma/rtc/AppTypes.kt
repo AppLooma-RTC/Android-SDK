@@ -56,27 +56,61 @@ enum class AppVideoCodec {
 enum class AppVideoDegradation { AUTO, KEEP_RESOLUTION, KEEP_FRAMERATE, BALANCED }
 
 /**
+ * How the SDK tunes your camera when you leave the details to it.
+ *
+ * STABLE_HD (default) holds one steady HD picture: a single layer, resolution
+ * kept under pressure (frame rate gives way first) and receivers pinned to the
+ * full picture. The resolution is picked once per phone: 1080p30 at 3.5 Mbps
+ * where the chosen codec has a hardware encoder, 720p30 at 1.8 Mbps where it
+ * would be encoded on the CPU.
+ *
+ * ULTRA_HD_4K is the premium mode: 2160p30, one layer, resolution kept. It
+ * needs a hardware encoder that can do 3840x2160 (see
+ * [AppEngine.isUltraHdSupported]); where there is none the SDK falls back to
+ * STABLE_HD and logs a warning. Both ends need a strong network (20 Mbps or
+ * more each way recommended) and the phone runs warmer.
+ *
+ * ADAPTIVE is the behaviour before 0.4.11: three layers, receivers switch
+ * layers by view size and network, resolution may drop to keep motion smooth.
+ *
+ * Any field you set explicitly on [AppVideoConfig] wins over the mode.
+ * Unreleased.
+ */
+enum class AppVideoMode { STABLE_HD, ULTRA_HD_4K, ADAPTIVE }
+
+/**
  * Capture and encode settings for your own camera.
+ *
+ * `mode` picks sensible values for everything below; see [AppVideoMode].
+ * Fields left at their default follow the mode, fields you set win.
  *
  * `maxBitrate` is in **bits per second** — `1_900_000` for 1.9 Mbps. A value
  * under 10 000 is almost certainly kbps by mistake and is logged as a warning.
- * `height` must be one of 360 / 540 / 720 / 1080 / 1440; anything else snaps
- * to the nearest preset (also logged).
+ * `height` must be one of 360 / 540 / 720 / 1080 / 1440 / 2160; anything else
+ * snaps to the nearest preset (also logged). 0 = chosen by the mode.
  *
- * With `maxBitrate` 0 the cap is 5 Mbps at 1440p, 4 Mbps at 1080p, 2.2 Mbps
- * at 720p, and the preset default below that.
+ * With `maxBitrate` 0 the cap comes from the mode: 3.5 Mbps at 1080p and
+ * 1.8 Mbps at 720p for STABLE_HD, 25 Mbps for ULTRA_HD_4K; in ADAPTIVE it is
+ * 5 Mbps at 1440p, 4 Mbps at 1080p, 2.2 Mbps at 720p, and the preset default
+ * below that.
  */
 data class AppVideoConfig @JvmOverloads constructor(
-    /** 360, 540, 720, 1080 or 1440 — the short edge of a 16:9 frame. */
-    val height: Int = 1080,
+    /** 360, 540, 720, 1080, 1440 or 2160 — the short edge of a 16:9 frame. 0 = chosen by [mode]. */
+    val height: Int = 0,
     val fps: Int = 30,
-    /** Cap on the encoder's bitrate in bits per second (e.g. 1_900_000); 0 = our default for the height. */
+    /** Cap on the encoder's bitrate in bits per second (e.g. 1_900_000); 0 = chosen by [mode]. */
     val maxBitrate: Int = 0,
-    /** Three layers so weak links still get a picture. Off = one layer only. */
-    val simulcast: Boolean = true,
+    /**
+     * Three layers so weak links still get a picture; false = one layer only.
+     * null = chosen by [mode] (on in ADAPTIVE, off in STABLE_HD and ULTRA_HD_4K).
+     */
+    val simulcast: Boolean? = null,
     /** VP8, H.264, AV1, or let the engine choose per phone. */
     val codec: AppVideoCodec = AppVideoCodec.AUTO,
-    /** What to give up first under pressure. See [AppVideoDegradation]. Since 0.4.10. */
+    /**
+     * What to give up first under pressure. See [AppVideoDegradation]. AUTO =
+     * chosen by [mode] (KEEP_RESOLUTION in STABLE_HD and ULTRA_HD_4K). Since 0.4.10.
+     */
     val degradation: AppVideoDegradation = AppVideoDegradation.AUTO,
     /**
      * Floor on the encoder's bitrate in bits per second; 0 = engine default.
@@ -84,6 +118,8 @@ data class AppVideoConfig @JvmOverloads constructor(
      * the value is kept but does not change what is sent. Since 0.4.10.
      */
     val minBitrate: Int = 0,
+    /** The overall tuning; see [AppVideoMode]. Unreleased. */
+    val mode: AppVideoMode = AppVideoMode.STABLE_HD,
 )
 
 /** Which of your simulcast layers the numbers in [AppVideoQualityInfo] describe. */

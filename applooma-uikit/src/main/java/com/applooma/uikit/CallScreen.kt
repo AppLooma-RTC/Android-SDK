@@ -45,6 +45,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
     var startedAt by remember { mutableStateOf<Long?>(null) }
     var status by remember { mutableStateOf("Connecting…") }
     var quality by remember { mutableStateOf("HD") }
+    var bandwidthSince by remember { mutableStateOf<Long?>(null) }
     var mic by remember { mutableStateOf(true) }
     var cam by remember { mutableStateOf(true) }
     var ended by remember { mutableStateOf(false) }
@@ -55,7 +56,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
     val engine = rememberEngine(
         kit.appId,
         // A private voice call belongs on the call path: earpiece, speech-tuned echo cancelling.
-        AppEngineOptions(audioScenario = if (video) AppAudioScenario.MEDIA else AppAudioScenario.CALL, video = AppVideoConfig(height = 720, fps = 30)),
+        AppEngineOptions(audioScenario = if (video) AppAudioScenario.MEDIA else AppAudioScenario.CALL, video = AppVideoConfig(fps = 30)),
         object : AppEventHandler() {
             override fun onUserJoined(user: AppRemoteUser) = meet(user)
             override fun onTrackSubscribed(user: AppRemoteUser) = meet(user)
@@ -66,7 +67,13 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
             }
             override fun onRemoteStats(stats: List<AppRemoteStats>) {
                 val s = stats.firstOrNull() ?: return
-                quality = if (video && s.videoHeight > 0) "${s.videoHeight}p" else if (s.audioPacketsLost > 50) "Weak" else "HD"
+                // Never a pixel count: "HD" normally, "Weak network" only after
+                // five seconds of a bandwidth-limited camera or heavy audio loss.
+                val limited = bandwidthSince?.let { System.currentTimeMillis() - it >= 5000 } == true
+                quality = if (limited || s.audioPacketsLost > 50) "Weak network" else "HD"
+            }
+            override fun onVideoQualityChanged(quality: AppVideoQualityInfo) {
+                bandwidthSince = if (quality.reason == AppVideoQualityReason.BANDWIDTH) (bandwidthSince ?: System.currentTimeMillis()) else null
             }
         },
     )

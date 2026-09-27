@@ -64,7 +64,7 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
         scope.launch { delay(3200); banner = null }
     }
 
-    val engine = rememberEngine(kit.appId, AppEngineOptions(audioScenario = AppAudioScenario.MEDIA, video = AppVideoConfig(height = 720, fps = 30)), object : AppEventHandler() {
+    val engine = rememberEngine(kit.appId, AppEngineOptions(audioScenario = AppAudioScenario.MEDIA, video = AppVideoConfig(fps = 30)), object : AppEventHandler() {
         override fun onTrackSubscribed(user: AppRemoteUser) { tick++ }
         override fun onUserMediaChanged(user: AppRemoteUser, video: Boolean, audio: Boolean) { tick++ }
         override fun onAudienceChanged(audience: List<AppRemoteUser>) { tick++ }

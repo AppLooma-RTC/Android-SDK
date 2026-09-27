@@ -28,6 +28,7 @@ import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.RemoteTrackPublication
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.track.VideoEncoding
+import io.livekit.android.room.track.VideoCaptureParameter
 import io.livekit.android.room.track.VideoPreset169
 import io.livekit.android.room.track.VideoQuality
 import io.livekit.android.room.track.VideoTrack
@@ -286,7 +287,7 @@ class AppEngine private constructor(
             }
         }
 
-        private val HEIGHTS = intArrayOf(360, 540, 720, 1080, 1440)
+        private val HEIGHTS = intArrayOf(360, 540, 720, 1080, 1440, 2160)
         internal fun snapHeight(wanted: Int): Int = HEIGHTS.minByOrNull { kotlin.math.abs(it - wanted) } ?: 1080
 
         /** `AUTO` leaves the engine's per-source default (frame rate first for a camera). */
@@ -297,44 +298,112 @@ class AppEngine private constructor(
             AppVideoDegradation.AUTO -> null
         }
 
-        private fun roomOptions(o: AppEngineOptions): RoomOptions {
-            val height = snapHeight(o.video.height)
-            if (height != o.video.height) android.util.Log.w(TAG, "AppVideoConfig.height=${o.video.height} is not a preset; using ${height}p")
-            val preset = when (height) {
-                360 -> VideoPreset169.H360
-                540 -> VideoPreset169.H540
-                720 -> VideoPreset169.H720
-                1440 -> VideoPreset169.H1440
-                else -> VideoPreset169.H1080
+        private fun mimeOfCodec(codec: String): String = when (codec) {
+            "h264" -> "video/avc"; "av1" -> "video/av01"; else -> "video/x-vnd.on2.vp8"
+        }
+
+        /**
+         * STABLE_HD tier, probed once per process: whether the codec AUTO
+         * resolves to has a hardware encoder on this phone. Hardware holds
+         * 1080p30 steadily; a CPU encoder (VP8 on MediaTek, for one) does not,
+         * so those phones get 720p30.
+         */
+        private val hardwareTier: Boolean by lazy {
+            AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(resolveCodec(AppVideoCodec.AUTO))) != null
+        }
+
+        private val ultraHdGate: Boolean by lazy {
+            try {
+                val mime = mimeOfCodec(resolveCodec(AppVideoCodec.AUTO))
+                val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime)
+                val caps = hw?.getCapabilitiesForType(mime)?.videoCapabilities
+                caps != null && (caps.isSizeSupported(3840, 2160) || caps.isSizeSupported(2160, 3840))
+            } catch (_: Throwable) { false }
+        }
+
+        /**
+         * Whether this phone can publish [AppVideoMode.ULTRA_HD_4K]: the
+         * hardware encoder for the codec the SDK would pick accepts 3840x2160.
+         * When false, ULTRA_HD_4K falls back to STABLE_HD. Unreleased.
+         */
+        @JvmStatic fun isUltraHdSupported(): Boolean = ultraHdGate
+
+        /** What a config resolves to on this phone once the mode fills in the blanks. */
+        internal data class ResolvedVideo(
+            val mode: AppVideoMode,
+            val height: Int,
+            val fps: Int,
+            val maxBitrate: Int,
+            val simulcast: Boolean,
+            val degradation: AppVideoDegradation,
+        )
+
+        internal fun resolveVideo(c: AppVideoConfig): ResolvedVideo {
+            var mode = c.mode
+            if (mode == AppVideoMode.ULTRA_HD_4K && !ultraHdGate) {
+                android.util.Log.w(TAG, "AppVideoMode.ULTRA_HD_4K: no hardware encoder for 3840x2160 on this phone; using STABLE_HD")
+                mode = AppVideoMode.STABLE_HD
             }
+            val tierHeight = when (mode) {
+                AppVideoMode.ULTRA_HD_4K -> 2160
+                AppVideoMode.STABLE_HD -> if (hardwareTier) 1080 else 720
+                AppVideoMode.ADAPTIVE -> 1080
+            }
+            val height = if (c.height > 0) snapHeight(c.height) else tierHeight
+            if (c.height > 0 && height != c.height) android.util.Log.w(TAG, "AppVideoConfig.height=${c.height} is not a preset; using ${height}p")
+            val maxBitrate = when {
+                c.maxBitrate > 0 -> c.maxBitrate
+                height == 2160 -> 25_000_000
+                mode == AppVideoMode.STABLE_HD -> when (height) { 1440 -> 5_000_000; 1080 -> 3_500_000; 720 -> 1_800_000; else -> presetOf(height).encoding.maxBitrate }
+                else -> when (height) { 1440 -> 5_000_000; 1080 -> 4_000_000; 720 -> 2_200_000; else -> presetOf(height).encoding.maxBitrate }
+            }
+            val simulcast = c.simulcast ?: (mode == AppVideoMode.ADAPTIVE)
+            val degradation = if (c.degradation == AppVideoDegradation.AUTO && mode != AppVideoMode.ADAPTIVE) AppVideoDegradation.KEEP_RESOLUTION else c.degradation
+            return ResolvedVideo(mode, height, c.fps, maxBitrate, simulcast, degradation)
+        }
+
+        private fun presetOf(height: Int): VideoPreset169 = when (height) {
+            360 -> VideoPreset169.H360
+            540 -> VideoPreset169.H540
+            720 -> VideoPreset169.H720
+            1440 -> VideoPreset169.H1440
+            else -> VideoPreset169.H1080
+        }
+
+        private fun roomOptions(o: AppEngineOptions): RoomOptions {
+            val v = resolveVideo(o.video)
+            // 2160p has no engine preset; capture at 3840x2160 directly.
+            val capture = if (v.height == 2160) VideoCaptureParameter(3840, 2160, v.fps) else presetOf(v.height).capture
             if (o.video.maxBitrate in 1 until 10_000)
-                android.util.Log.w(TAG, "AppVideoConfig.maxBitrate=${o.video.maxBitrate} is in bits per second — did you mean ${o.video.maxBitrate}_000 (kbps)?")
-            // Our own caps for the sharp end: the preset defaults were tuned for
-            // calls and leave 1080p visibly soft on a good link. 540p and below
-            // keep theirs. minBitrate: the engine's encoding carries no floor on
-            // Android, so AppVideoConfig.minBitrate is not applied here.
-            val defaultMaxBitrate = when (height) { 1440 -> 5_000_000; 1080 -> 4_000_000; 720 -> 2_200_000; else -> preset.encoding.maxBitrate }
-            val encoding = VideoEncoding(maxBitrate = if (o.video.maxBitrate > 0) o.video.maxBitrate else defaultMaxBitrate, maxFps = o.video.fps)
+                android.util.Log.w(TAG, "AppVideoConfig.maxBitrate=${o.video.maxBitrate} is in bits per second - did you mean ${o.video.maxBitrate}_000 (kbps)?")
+            // minBitrate: the engine's encoding carries no floor on Android, so
+            // AppVideoConfig.minBitrate is not applied here. There is no start
+            // bitrate / initial bandwidth estimate hook for a publisher either,
+            // so the encoder ramps up to the tier cap on its own.
+            val encoding = VideoEncoding(maxBitrate = v.maxBitrate, maxFps = v.fps)
             val codec = resolveCodec(o.video.codec)
+            debug("video mode ${v.mode} ${v.height}p${v.fps} max=${v.maxBitrate / 1000}kbps simulcast=${v.simulcast} degradation=${v.degradation} codec=$codec")
             return RoomOptions(
-                // Adaptive stream still down-shifts a remote layer for a small or
-                // hidden view (good on weak links). Dynacast is OFF: with it on, a
-                // publisher withholds a video layer until a subscriber's "viewing"
-                // signal arrives, which on flaky links left co-hosts staring at a
-                // black frame. Off, every publisher always sends — video just works.
-                adaptiveStream = true,
+                // ADAPTIVE: adaptive stream down-shifts a remote layer for a small
+                // or hidden view (good on weak links). STABLE_HD / ULTRA_HD_4K
+                // turn it off so a receiver keeps the full picture. Dynacast is
+                // OFF: with it on, a publisher withholds a video layer until a
+                // subscriber's "viewing" signal arrives, which on flaky links left
+                // co-hosts staring at a black frame. Off, every publisher always
+                // sends - video just works.
+                adaptiveStream = v.mode == AppVideoMode.ADAPTIVE,
                 dynacast = false,
-                videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = preset.capture),
+                videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = capture),
                 videoTrackPublishDefaults = VideoTrackPublishDefaults(
                     videoEncoding = encoding,
-                    simulcast = o.video.simulcast,
+                    simulcast = v.simulcast,
                     videoCodec = codec,
                     // Anything but VP8 rides with a VP8 backup layer: a viewer
                     // whose phone cannot decode the main stream (or a hardware
                     // encoder that emits something only it can read) is served
                     // VP8 by the server instead of a black frame.
-                    backupCodec = if (codec != "vp8") BackupVideoCodec(codec = "vp8", encoding = encoding, simulcast = o.video.simulcast) else null,
-                    degradationPreference = degradationOf(o.video.degradation),
+                    backupCodec = if (codec != "vp8") BackupVideoCodec(codec = "vp8", encoding = encoding, simulcast = v.simulcast) else null,
+                    degradationPreference = degradationOf(v.degradation),
                 ),
                 audioTrackCaptureDefaults = LocalAudioTrackOptions(
                     noiseSuppression = o.audio.noiseSuppression,
@@ -533,8 +602,10 @@ class AppEngine private constructor(
         lp.videoTrackCaptureDefaults = ro.videoTrackCaptureDefaults ?: lp.videoTrackCaptureDefaults
         lp.videoTrackPublishDefaults = ro.videoTrackPublishDefaults ?: lp.videoTrackPublishDefaults
         val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
-        val republish = config.maxBitrate != previous.maxBitrate || config.simulcast != previous.simulcast ||
-            config.codec != previous.codec || config.degradation != previous.degradation
+        val was = resolveVideo(previous)
+        val now = resolveVideo(config)
+        val republish = now.maxBitrate != was.maxBitrate || now.simulcast != was.simulcast ||
+            config.codec != previous.codec || now.degradation != was.degradation
         if (republish) {
             lp.setCameraEnabled(false)
             lp.setCameraEnabled(true)
@@ -913,7 +984,7 @@ class AppEngine private constructor(
         val top = active.maxByOrNull { (it.members["frameHeight"] as? Number)?.toInt() ?: 0 } ?: return
         val m = top.members
         val h = (m["frameHeight"] as? Number)?.toInt() ?: 0
-        val configured = snapHeight(videoConfig.height)
+        val configured = resolveVideo(videoConfig).height
         val layer = when (m["rid"] as? String) {
             "f" -> AppVideoLayer.HIGH
             "h" -> AppVideoLayer.MEDIUM
