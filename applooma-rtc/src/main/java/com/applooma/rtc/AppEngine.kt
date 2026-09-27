@@ -197,6 +197,7 @@ class AppEngine private constructor(
     private val users = LinkedHashMap<String, AppRemoteUser>()
     private val pendingData = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var lastRole: AppRole? = null
+    private var lastCanPublish: Boolean? = null
     private var playbackVolume = 100
     private var videoConfig: AppVideoConfig = options.video
     private var noiseSuppression = true
@@ -462,6 +463,7 @@ class AppEngine private constructor(
         // live stream sees nobody and never receives the host's video.
         seedExistingParticipants()
         lastRole = currentRole
+        lastCanPublish = room.localParticipant.permissions?.canPublish ?: (lastRole != AppRole.AUDIENCE)
         eventHandler?.onJoined(localUid)
         flushPending()
         startStats()
@@ -1160,9 +1162,18 @@ class AppEngine private constructor(
 
     private suspend fun handleRoleChange() {
         val role = currentRole
-        if (role == lastRole) return
-        lastRole = role
         val canPublish = room.localParticipant.permissions?.canPublish ?: (role != AppRole.AUDIENCE)
+        // A seat change arrives as two separate events: the role (metadata) and
+        // the publish permission. They can land in either order. Reacting to the
+        // role alone published the microphone before the permission existed
+        // ("no permission to publish"), and when the permission then arrived the
+        // role had not changed, so the microphone was never published again and
+        // the speaker could not be heard (seen in a customer voice room). Act on
+        // the pair instead.
+        if (role == lastRole && canPublish == lastCanPublish) return
+        val roleChanged = role != lastRole
+        lastRole = role
+        lastCanPublish = canPublish
         if (role == AppRole.AUDIENCE || !canPublish) {
             // Sent back to the audience: nothing of ours may play, music included.
             mixer.stop(); mixer.micMuted = false; micWanted = false
@@ -1171,7 +1182,8 @@ class AppEngine private constructor(
             micWanted = true; mixer.micMuted = false
             try { room.localParticipant.setMicrophoneEnabled(true) } catch (t: Throwable) { eventHandler?.onError(t) }
         }
-        eventHandler?.onRoleChanged(role)
+        debug("seat role=$role canPublish=$canPublish")
+        if (roleChanged) eventHandler?.onRoleChanged(role)
     }
 
     /** Release all resources. */

@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.4.12
+
+- Voice-room seats: a speaker put back on a seat can be heard again. A seat change arrives as two events (role and publish permission) in either order; the SDK reacted to the role alone, tried to publish before the permission existed, and never retried when the permission arrived. It now acts on the pair and publishes the microphone as soon as both allow it.
+
 ## rtc-android 0.4.11 · uikit-android 0.2.5
 
 - Echo: the software echo canceller is now the default (`AppAudioOptions.preferHardwareEffects = false`). Many budget phones ship a weak hardware canceller, and in loudspeaker voice rooms a speaker heard their own voice come back quietly. Apps that play in-room music through the SDK player on the loudspeaker can set `preferHardwareEffects = true`, because only the platform canceller references that playout.
