@@ -359,7 +359,13 @@ class AppEngine private constructor(
             }
             val simulcast = c.simulcast ?: (mode == AppVideoMode.ADAPTIVE)
             val degradation = if (c.degradation == AppVideoDegradation.AUTO && mode != AppVideoMode.ADAPTIVE) AppVideoDegradation.KEEP_RESOLUTION else c.degradation
-            return ResolvedVideo(mode, height, c.fps, maxBitrate, simulcast, degradation)
+            // Software-encoder phones (no usable hardware encoder, e.g. MediaTek
+            // today) cannot hold 720p at 30 fps while also decoding the other
+            // side: measured on realme RMX3941 the frame rate swung 2-28 fps
+            // under CPU limit. A steady 20 fps looks far smoother. Only the
+            // default fps is capped; an app that asks for another value keeps it.
+            val fps = if (mode == AppVideoMode.STABLE_HD && !hardwareTier && c.height <= 0 && c.fps == 30) 20 else c.fps
+            return ResolvedVideo(mode, height, fps, maxBitrate, simulcast, degradation)
         }
 
         private fun presetOf(height: Int): VideoPreset169 = when (height) {
@@ -373,7 +379,9 @@ class AppEngine private constructor(
         private fun roomOptions(o: AppEngineOptions): RoomOptions {
             val v = resolveVideo(o.video)
             // 2160p has no engine preset; capture at 3840x2160 directly.
-            val capture = if (v.height == 2160) VideoCaptureParameter(3840, 2160, v.fps) else presetOf(v.height).capture
+            // Capture at the resolved frame rate too, so a 20 fps tier does not pay
+            // for 30 captured frames it throws away.
+            val capture = if (v.height == 2160) VideoCaptureParameter(3840, 2160, v.fps) else presetOf(v.height).capture.let { VideoCaptureParameter(it.width, it.height, v.fps) }
             if (o.video.maxBitrate in 1 until 10_000)
                 android.util.Log.w(TAG, "AppVideoConfig.maxBitrate=${o.video.maxBitrate} is in bits per second - did you mean ${o.video.maxBitrate}_000 (kbps)?")
             // minBitrate: the engine's encoding carries no floor on Android, so

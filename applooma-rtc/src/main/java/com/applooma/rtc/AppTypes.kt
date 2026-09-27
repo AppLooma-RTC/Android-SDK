@@ -155,12 +155,17 @@ data class AppAudioOptions @JvmOverloads constructor(
     val noiseSuppression: Boolean = true,
     val autoGainControl: Boolean = true,
     /**
-     * Use the phone's own echo canceller / noise suppressor when it has one,
-     * with WebRTC's software stages behind it. On, the platform canceller also
-     * references everything the phone plays — including in-room music — so
-     * a host on the loudspeaker does not feed the room back to itself.
+     * Use the phone's own echo canceller / noise suppressor instead of the
+     * SDK's software ones. Off by default since 0.4.11: many budget phones ship
+     * a weak hardware canceller, and on the loudspeaker in a voice room a
+     * speaker heard their own voice come back quietly. The software canceller
+     * is consistent on every phone.
+     *
+     * Turn it on only if your app plays in-room music through the SDK's
+     * music player on the loudspeaker: the platform canceller also references
+     * that playout, the software one does not.
      */
-    val preferHardwareEffects: Boolean = true,
+    val preferHardwareEffects: Boolean = false,
     /** Post-processing microphone gain in percent; 100 = unity, 200 = twice as loud (limited, never clips). */
     val micGain: Int = 100,
     /**
@@ -201,9 +206,10 @@ data class AppEngineOptions @JvmOverloads constructor(
     val audioScenario: AppAudioScenario = AppAudioScenario.CALL,
     val video: AppVideoConfig = AppVideoConfig(),
     /**
-     * Force WebRTC's software echo canceller and ignore the phone's own.
-     * Off by default since 0.4.4: the platform canceller is what keeps a
-     * loudspeaker session from echoing. Same as `audio.preferHardwareEffects = false`.
+     * Force the software echo canceller and ignore the phone's own. Since
+     * 0.4.11 the software canceller is already the default
+     * (`audio.preferHardwareEffects = false`); this flag is kept for
+     * compatibility and wins over `preferHardwareEffects = true`.
      */
     val softwareEchoCancellation: Boolean = false,
     val audio: AppAudioOptions = AppAudioOptions(),

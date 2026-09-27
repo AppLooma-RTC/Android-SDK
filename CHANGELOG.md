@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.11 · uikit-android 0.2.5
+
+- Echo: the software echo canceller is now the default (`AppAudioOptions.preferHardwareEffects = false`). Many budget phones ship a weak hardware canceller, and in loudspeaker voice rooms a speaker heard their own voice come back quietly. Apps that play in-room music through the SDK player on the loudspeaker can set `preferHardwareEffects = true`, because only the platform canceller references that playout.
+
+- Stable HD on software-encoder phones (no usable hardware encoder, e.g. MediaTek today) runs 720p at a steady 20 fps instead of 30: measured on a realme RMX3941, 30 fps swung between 2 and 28 fps under CPU limit. Camera capture follows the same rate. An app that sets `fps` or `height` keeps its value.
 
 - `AppVideoMode` on `AppVideoConfig.mode`: `STABLE_HD` (new default), `ULTRA_HD_4K` (premium, opt-in), `ADAPTIVE` (the previous behaviour). STABLE_HD publishes one layer (no simulcast), keeps resolution under pressure (`KEEP_RESOLUTION`) and turns adaptive stream off so receivers keep the full picture. Its size is chosen once per phone: 1080p30 at 3.5 Mbps where the chosen codec has a hardware encoder, 720p30 at 1.8 Mbps where it would be encoded on the CPU. Fixes a 1:1 call on a MediaTek phone swinging between 160p and 1280p.
 - `ULTRA_HD_4K`: 2160p30 (3840x2160), one layer, 25 Mbps, resolution kept. Only where the hardware encoder for the chosen codec accepts 3840x2160; otherwise STABLE_HD with a warning. `AppEngine.isUltraHdSupported()` returns the check.
