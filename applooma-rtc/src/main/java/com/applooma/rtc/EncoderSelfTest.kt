@@ -80,6 +80,7 @@ internal object EncoderSelfTest {
             CodecMemory.rememberBad(app, MIME, info.name)
             AppLoomaVideoEncoderFactory.forceSoftware(MIME)
             DeviceTelemetry.reportWithoutJoin(app, CodecHealth.REASON_ENCODER_ERROR, "h264", info.name)
+            Diagnostics.problem(DiagPolicy.PROBLEM_SELF_TEST)
         }
         return AppEncoderSelfTestResult(reason == null, info.name, reason, elapsed)
     }

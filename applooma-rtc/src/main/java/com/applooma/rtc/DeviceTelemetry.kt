@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
  */
 internal object DeviceTelemetry {
     /** Same API host the other SDKs use for their REST calls. */
-    private const val API_BASE = "https://api.applooma.dev/v1"
+    internal const val API_BASE = "https://api.applooma.dev/v1"
     private const val PREFS = "applooma.devcfg"
     private const val TIMEOUT_MS = 3_000
     private const val FLUSH_DELAY_MS = 5_000L

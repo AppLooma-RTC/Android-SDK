@@ -197,6 +197,7 @@ class AppEngine private constructor(
             appContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
     private var eventsJob: Job? = null
     private var statsJob: Job? = null
+    private var lastDiagStatsAt = 0L
     private val users = LinkedHashMap<String, AppRemoteUser>()
     private val pendingData = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var lastRole: AppRole? = null
@@ -238,7 +239,11 @@ class AppEngine private constructor(
             timber.log.Timber.plant(tree)
         }
 
-        internal fun debug(line: String) { debugSink?.invoke("I/$TAG: $line") }
+        /** SDK log line: always kept in the diagnostics ring, and passed to the app's sink when debug logging is on. */
+        internal fun debug(line: String) {
+            Diagnostics.log(line)
+            debugSink?.invoke("I/$TAG: $line")
+        }
 
         /** Whether this phone has a hardware encoder for the given MIME type. */
         internal fun hasHardwareEncoder(mime: String): Boolean = try {
@@ -450,6 +455,7 @@ class AppEngine private constructor(
             CodecMemory.apply(context)
             DeviceTelemetry.region = options.region.code
             DeviceTelemetry.load(context)
+            Diagnostics.configure(context, options.remoteDiagnostics)
             val engine = AppEngine(context, appId, eventHandler, options)
             // Once per install and SDK version, in the background; never the camera.
             EncoderSelfTest.runOnceIfDue(context, options.encoderSelfTest)
@@ -490,6 +496,7 @@ class AppEngine private constructor(
         firstFrameSeen.clear()
         resetCodecRecovery()
         joinToken = token
+        Diagnostics.beginSession(appContext, token)
         armTokenTimer(token)
         // Device tuning: this join uses the cached answer (already in the room
         // options); a fresh one is fetched in the background and applies to
@@ -503,7 +510,14 @@ class AppEngine private constructor(
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
         }
-        room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
+        try {
+            room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
+        } catch (t: Throwable) {
+            debug("join failed: ${t.javaClass.simpleName}: ${t.message}")
+            Diagnostics.problem(DiagPolicy.PROBLEM_JOIN)
+            Diagnostics.endSession("join failed")
+            throw t
+        }
         isJoined = true
         debug("connected localUid=$localUid")
         eventHandler?.onConnectionStage(AppConnectionStage.CONNECTED, null, elapsedSinceJoin())
@@ -527,11 +541,13 @@ class AppEngine private constructor(
     /** Java-friendly fire-and-forget variant. Success arrives as [AppEventHandler.onJoined]. */
     fun joinChannelAsync(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         scope.launch {
-            try { joinChannel(token, wsUrl, options) } catch (t: Throwable) { eventHandler?.onError(t) }
+            try { joinChannel(token, wsUrl, options) } catch (t: Throwable) { debug("error: joinChannelAsync ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) }
         }
     }
 
     fun leaveChannel() {
+        if (isJoined) debug("leaveChannel")
+        Diagnostics.endSession("leave")
         tokenTimer?.cancel(); tokenTimer = null
         resetFallbacks()
         mixer.stop()
@@ -764,6 +780,7 @@ class AppEngine private constructor(
     private fun onEncoderFailure(codec: String, detail: String) {
         if (localVideoTrack == null || !codec.equals(currentCodec, ignoreCase = true)) return
         debug("video encoder failure codec=$codec $detail")
+        Diagnostics.problem(DiagPolicy.PROBLEM_ENCODER)
         fallBack(CodecHealth.REASON_ENCODER_ERROR)
     }
 
@@ -819,6 +836,7 @@ class AppEngine private constructor(
             to = "$from:single"
         }
         debug("codec recovery: $from -> $to reason=$reason")
+        Diagnostics.problem(DiagPolicy.PROBLEM_FALLBACK)
         reportDevice("fallback", codec, hw?.name, fromCodec = codec, toCodec = if (hw != null) "vp8" else codec)
         val ro = roomOptions(options.copy(video = videoConfig))
         val lp = room.localParticipant
@@ -868,6 +886,7 @@ class AppEngine private constructor(
         if (localVideoTrack == null) return
         val viewer = from.identity?.value ?: return
         debug("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")})")
+        Diagnostics.problem(DiagPolicy.PROBLEM_NO_FRAMES)
         currentCodec.let { reportDevice(CodecHealth.REASON_VIEWERS, it, encoderNameFor(it)) }
         if (viewerReports.onReport(System.currentTimeMillis(), viewer, room.remoteParticipants.size)) {
             fallBack(CodecHealth.REASON_VIEWERS)
@@ -1189,7 +1208,7 @@ class AppEngine private constructor(
     }
 
     private fun launchSafely(block: suspend () -> Unit) {
-        scope.launch { try { block() } catch (t: Throwable) { eventHandler?.onError(t) } }
+        scope.launch { try { block() } catch (t: Throwable) { debug("error: ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) } }
     }
 
     private fun onMain(block: () -> Unit) { scope.launch { block() } }
@@ -1342,6 +1361,10 @@ class AppEngine private constructor(
                     )
                     prevOutSent = outSent; prevOutLost = outLost; prevInRecv = inRecv; prevInLost = inLost; prevBytesOut = bytesOut; prevBytesIn = bytesIn; prevAt = now
                     eventHandler?.onStats(stats)
+                    if (now - lastDiagStatsAt >= 10_000) {
+                        lastDiagStatsAt = now
+                        debug("stats rtt=${stats.rttMs}ms up=${stats.uploadBitrate / 1000}kbps down=${stats.downloadBitrate / 1000}kbps lossUp=${(stats.uploadLoss * 100).toInt()}% lossDown=${(stats.downloadLoss * 100).toInt()}% quality=${stats.quality} remotes=${room.remoteParticipants.size}")
+                    }
                     applyFallbacks(stats)
                     // What our own camera is sending: the top simulcast layer
                     // that carries frames, reported only when it changes.
@@ -1506,7 +1529,7 @@ class AppEngine private constructor(
                         if (event.participant === room.localParticipant) notifyLocalVideoChanged()
                         else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) notifyLocalVideoChanged()
-                    is RoomEvent.Reconnecting -> { debug("reconnecting"); eventHandler?.onReconnecting() }
+                    is RoomEvent.Reconnecting -> { debug("reconnecting"); Diagnostics.reconnecting(); eventHandler?.onReconnecting() }
                     is RoomEvent.Reconnected -> {
                         debug("reconnected")
                         users.clear()
@@ -1515,6 +1538,7 @@ class AppEngine private constructor(
                     }
                     is RoomEvent.Disconnected -> {
                         debug("disconnected reason=${event.reason?.name} error=${event.error}")
+                        Diagnostics.endSession("disconnected")
                         isJoined = false
                         tokenTimer?.cancel(); tokenTimer = null
                         resetFallbacks()
@@ -1611,6 +1635,7 @@ class AppEngine private constructor(
     fun renewToken(token: String) {
         if (token.isBlank()) return
         joinToken = token
+        Diagnostics.updateToken(token)
         if (isJoined) armTokenTimer(token)
         debug("join token renewed")
     }
@@ -1816,6 +1841,18 @@ class AppEngine private constructor(
     fun stopNetworkTest() { networkTestJob?.cancel(); networkTestJob = null }
 
     private fun failedTest(error: String) = AppNetworkTestResult(AppNetworkQuality.UNKNOWN, AppNetworkQuality.UNKNOWN, -1, -1, 0f, 0f, error)
+
+    /**
+     * Upload this device's recent SDK log lines to AppLooma support now (or
+     * with the next join when not in a channel), for example from a "report a
+     * problem" button. [reason] is a short label you choose ("user_report").
+     * Only SDK-produced lines are sent, scrubbed of names, metadata, tokens
+     * and URL parameters; never audio, video or messages. Does nothing when
+     * [AppEngineOptions.remoteDiagnostics] is false. Unreleased.
+     */
+    fun uploadDiagnostics(reason: String) {
+        try { Diagnostics.requestUpload(reason) } catch (_: Throwable) {}
+    }
 
     /** Release all resources. */
     fun destroy() {

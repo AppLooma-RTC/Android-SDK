@@ -241,6 +241,15 @@ data class AppEngineOptions @JvmOverloads constructor(
      * request and reports. Unreleased.
      */
     val region: AppRegion = AppRegion.AUTO,
+    /**
+     * Remote diagnostics. The SDK keeps its own recent log lines in memory
+     * (never audio, video, messages or names) and uploads them, scrubbed, to
+     * AppLooma after a call that had a problem, when support switched
+     * collection on for this device or project, or when you call
+     * [AppEngine.uploadDiagnostics]. Kept 14 days. `false` turns every upload
+     * off. Unreleased.
+     */
+    val remoteDiagnostics: Boolean = true,
 )
 
 /** Region hint, see [AppEngineOptions.region]. Unreleased. */

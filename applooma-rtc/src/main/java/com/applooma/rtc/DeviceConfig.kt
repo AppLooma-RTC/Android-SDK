@@ -16,6 +16,8 @@ internal data class DeviceVideoConfig(
     val maxBitrateKbps: Int = 0,
     val disableSimulcast: Boolean = false,
     val ttlSeconds: Long = DEFAULT_TTL_S,
+    /** Server asks this device to upload its diagnostics after every call (`diag.enabled`). */
+    val diagEnabled: Boolean = false,
 ) {
     companion object {
         const val DEFAULT_TTL_S = 3600L
@@ -27,7 +29,8 @@ internal data class DeviceVideoConfig(
         fun parse(body: String?): DeviceVideoConfig? {
             val root = try { MiniJson(body ?: return null).parse() } catch (_: Throwable) { return null } as? Map<*, *> ?: return null
             val ttl = (root["ttlSeconds"] as? Number)?.toLong()?.takeIf { it > 0 } ?: DEFAULT_TTL_S
-            val v = root["video"] as? Map<*, *> ?: return DeviceVideoConfig(ttlSeconds = ttl)
+            val diag = (root["diag"] as? Map<*, *>)?.get("enabled") == true
+            val v = root["video"] as? Map<*, *> ?: return DeviceVideoConfig(ttlSeconds = ttl, diagEnabled = diag)
             fun codec(key: String) = (v[key] as? String)?.lowercase()?.takeIf { it in CODECS }
             fun positive(key: String) = (v[key] as? Number)?.toInt()?.takeIf { it > 0 } ?: 0
             return DeviceVideoConfig(
@@ -39,6 +42,7 @@ internal data class DeviceVideoConfig(
                 maxBitrateKbps = positive("maxBitrateKbps"),
                 disableSimulcast = v["disableSimulcast"] == true,
                 ttlSeconds = ttl,
+                diagEnabled = diag,
             )
         }
     }
