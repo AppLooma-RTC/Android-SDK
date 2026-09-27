@@ -553,10 +553,16 @@ class AppEngine private constructor(
      * headset is connected. To force a specific output use [setAudioRoute].
      */
     fun setSpeakerphone(on: Boolean) {
-        val routes = getAudioRoutes()
-        val headset = routes.firstOrNull { it == AppAudioRoute.BLUETOOTH || it == AppAudioRoute.WIRED_HEADSET }
-        setAudioRoute(headset ?: if (on) AppAudioRoute.SPEAKER else AppAudioRoute.EARPIECE)
+        // Remember it first: before the first join there is no route yet, and
+        // the choice must survive until the connection opens the audio device.
+        SharedAudio.preferSpeaker = on
+        debug("speakerphone=$on (active=${SharedAudio.activeScenario != null})")
+        if (SharedAudio.activeScenario != null) SharedAudio.reapply(appContext)
     }
+
+    /** Whether the loudspeaker is the chosen phone output (a headset still wins when connected). */
+    val isSpeakerphoneOn: Boolean
+        get() = currentAudioRoute?.let { it == AppAudioRoute.SPEAKER } ?: (SharedAudio.preferSpeaker ?: (options.audioScenario == AppAudioScenario.MEDIA))
 
     /**
      * The outputs that can be selected right now, best first: a Bluetooth

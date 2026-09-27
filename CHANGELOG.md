@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.13 · uikit-android 0.2.6
+
+- `setSpeakerphone()` is remembered when called before the first join and applied as soon as audio starts; voice rooms in the CALL scenario came up on the earpiece. New `isSpeakerphoneOn`.
 
 - Remote video no longer stays at 0 fps after a layout change with adaptive stream on. `AppVideoView` remembers what it shows and re-binds when it returns to a window (it used to stop for good once it left one), and follows a remote user's camera through unsubscribe/resubscribe. New `AppEngine.resubscribe(uid, includeAudio = false)`. New `AppEngineOptions.autoRecoverStalledVideo` (default true): a remote camera in a visible view, whose sender is publishing, received at 0 fps for more than 4 s is resubscribed, at most once per 15 s per user, and logged in the debug log.
 - `AppEngineOptions.adaptiveStream: Boolean?` (null = by mode: on in ADAPTIVE, off in STABLE_HD / ULTRA_HD_4K), so ADAPTIVE users can turn it off.

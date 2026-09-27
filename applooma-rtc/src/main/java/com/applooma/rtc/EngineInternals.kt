@@ -79,6 +79,13 @@ internal object SharedAudio {
     /** The scenario in force while any engine is joined, or null when none is. */
     @Volatile var activeScenario: AppAudioScenario? = null
         private set
+    /**
+     * The app's loudspeaker choice from setSpeakerphone(), remembered even
+     * before the first join (apps call it right after creating the engine;
+     * before this was kept, that call was lost and a CALL-scenario voice room
+     * came up on the earpiece). null = the scenario's default.
+     */
+    @Volatile var preferSpeaker: Boolean? = null
 
     @Synchronized fun switcher(context: Context): AudioSwitchHandler =
         switcher ?: AudioSwitchHandler(context.applicationContext).also { s ->
@@ -114,7 +121,19 @@ internal object SharedAudio {
         if (holders.isEmpty()) {
             switcher?.stop()
             activeScenario = null
+            preferSpeaker = null // the next channel starts from its own scenario's default
         }
+    }
+
+    /** Re-apply the device order after a speaker preference change while in a channel. */
+    @Synchronized fun reapply(context: Context) {
+        val scenario = activeScenario ?: return
+        val s = switcher(context)
+        configure(s, scenario)
+        // Pick the best device in the new order now; the switcher only re-picks on device changes.
+        val order = s.preferredDeviceList ?: return
+        val best = order.asSequence().mapNotNull { cls -> s.availableAudioDevices.firstOrNull { cls.isInstance(it) } }.firstOrNull()
+        if (best != null) s.selectDevice(best)
     }
 
     private fun configure(s: AudioSwitchHandler, scenario: AppAudioScenario) {
@@ -124,7 +143,8 @@ internal object SharedAudio {
         s.audioStreamType = if (media) android.media.AudioManager.STREAM_MUSIC else android.media.AudioManager.STREAM_VOICE_CALL
         s.audioAttributeUsageType = if (media) android.media.AudioAttributes.USAGE_MEDIA else android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
         s.audioAttributeContentType = if (media) android.media.AudioAttributes.CONTENT_TYPE_MUSIC else android.media.AudioAttributes.CONTENT_TYPE_SPEECH
-        val tail = if (media)
+        val speakerFirst = preferSpeaker ?: media
+        val tail = if (speakerFirst)
             listOf(com.twilio.audioswitch.AudioDevice.Speakerphone::class.java, com.twilio.audioswitch.AudioDevice.Earpiece::class.java)
         else
             listOf(com.twilio.audioswitch.AudioDevice.Earpiece::class.java, com.twilio.audioswitch.AudioDevice.Speakerphone::class.java)
