@@ -108,6 +108,15 @@ class AppEngine private constructor(
     // (see AppAudioOptions.micGain / noiseSuppressionLevel / agcTargetLevelDbfs).
     private val micGain = MicProcessor(options.audio.micGain, options.audio.noiseSuppressionLevel.thresholdDbfs, options.audio.agcTargetLevelDbfs)
 
+    /**
+     * The audio scenario this engine really runs with. An engine created while
+     * another is in a channel (a PK battle's second connection) adopts the
+     * scenario in force, so it does not move the first engine's audio.
+     */
+    private val audioScenario: AppAudioScenario = SharedAudio.activeScenario?.also {
+        if (it != options.audioScenario) android.util.Log.w(TAG, "AppEngine.create: another engine is in a channel with audioScenario=$it; adopting it instead of ${options.audioScenario}")
+    } ?: options.audioScenario
+
     private val room: Room = LiveKit.create(
         context.applicationContext,
         options = roomOptions(options),
@@ -125,11 +134,13 @@ class AppEngine private constructor(
                 // mode so the phone's echo canceller is engaged. Plain media
                 // mode leaves the canceller off, and a loudspeaker session then
                 // feeds itself back after a minute or two.
-                audioOutputType = if (options.audioScenario == AppAudioScenario.MEDIA) AudioType.CustomAudioType(
+                audioOutputType = if (audioScenario == AppAudioScenario.MEDIA) AudioType.CustomAudioType(
                     AudioManager.MODE_IN_COMMUNICATION,
                     AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build(),
                     AudioManager.STREAM_MUSIC,
                 ) else AudioType.CallAudioType(),
+                // One device switcher shared by every engine in the process (see SharedAudio).
+                audioHandler = SharedAudio.handlerFor(context, this, audioScenario),
                 javaAudioDeviceModuleCustomizer = { builder ->
                     val hardware = options.audio.preferHardwareEffects && !options.softwareEchoCancellation
                     // The platform canceller references everything the phone
@@ -144,7 +155,7 @@ class AppEngine private constructor(
                 audioProcessorOptions = AudioProcessorOptions(capturePostProcessor = micGain),
             ),
         ),
-    ).also { mixer.playoutUsage = if (options.audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
+    ).also { mixer.playoutUsage = if (audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
     private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -159,16 +170,8 @@ class AppEngine private constructor(
      * the list and is reported through [AppEventHandler.onAudioRouteChanged].
      */
     private fun configureAudioRouting() {
-        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return
-        val tail = if (options.audioScenario == AppAudioScenario.MEDIA)
-            listOf(com.twilio.audioswitch.AudioDevice.Speakerphone::class.java, com.twilio.audioswitch.AudioDevice.Earpiece::class.java)
-        else
-            listOf(com.twilio.audioswitch.AudioDevice.Earpiece::class.java, com.twilio.audioswitch.AudioDevice.Speakerphone::class.java)
-        handler.preferredDeviceList = listOf(
-            com.twilio.audioswitch.AudioDevice.BluetoothHeadset::class.java,
-            com.twilio.audioswitch.AudioDevice.WiredHeadset::class.java,
-        ) + tail
-        handler.audioDeviceChangeListener = { devices, selected ->
+        // The preferred order is applied by SharedAudio when the first engine joins.
+        SharedAudio.listen(this) { devices, selected ->
             val available = devices.map { it.toRoute() }.distinct()
             val route = selected?.toRoute()
             debug("audio route=$route available=$available")
@@ -400,7 +403,8 @@ class AppEngine private constructor(
                 // subscriber's "viewing" signal arrives, which on flaky links left
                 // co-hosts staring at a black frame. Off, every publisher always
                 // sends - video just works.
-                adaptiveStream = v.mode == AppVideoMode.ADAPTIVE,
+                // AppEngineOptions.adaptiveStream, when set, overrides the mode.
+                adaptiveStream = o.adaptiveStream ?: (v.mode == AppVideoMode.ADAPTIVE),
                 dynacast = false,
                 videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = capture),
                 videoTrackPublishDefaults = VideoTrackPublishDefaults(
@@ -561,13 +565,14 @@ class AppEngine private constructor(
      * join — the switcher starts with the connection.
      */
     fun getAudioRoutes(): List<AppAudioRoute> {
-        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return emptyList()
+        if (SharedAudio.activeScenario == null) return emptyList()
+        val handler = SharedAudio.switcher(appContext)
         return handler.availableAudioDevices.map { it.toRoute() }.distinct()
     }
 
     /** The output audio is going to right now, or null before the first join. */
     val currentAudioRoute: AppAudioRoute?
-        get() = (room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler)?.selectedAudioDevice?.toRoute()
+        get() = if (SharedAudio.activeScenario == null) null else SharedAudio.switcher(appContext).selectedAudioDevice?.toRoute()
 
     /**
      * Send audio to one specific output — for an in-call route picker
@@ -577,7 +582,8 @@ class AppEngine private constructor(
      * [AppEventHandler.onAudioRouteChanged] reports every change.
      */
     fun setAudioRoute(route: AppAudioRoute): Boolean {
-        val handler = room.audioHandler as? io.livekit.android.audio.AudioSwitchHandler ?: return false
+        if (SharedAudio.activeScenario == null) return false
+        val handler = SharedAudio.switcher(appContext)
         val wanted = handler.availableAudioDevices.firstOrNull { it.toRoute() == route } ?: return false
         handler.selectDevice(wanted)
         return true
@@ -600,9 +606,11 @@ class AppEngine private constructor(
      * hook for a thermal throttle (drop to 720p/15 fps when the phone is hot)
      * or a crowd rule (lower the host's bitrate when the room passes N viewers).
      *
-     * Resolution and fps change in place, without a republish. A bitrate or
-     * simulcast change republishes the camera, which costs about half a second
-     * of video for viewers and nothing for audio.
+     * Resolution and fps change in place (the camera restarts, the
+     * publication stays). Bitrate and degradation change on the live encoder,
+     * with no interruption. Only a codec or simulcast change republishes the
+     * camera, which costs about half a second of video for viewers and nothing
+     * for audio. None of these touch what you receive from others.
      */
     fun setVideoConfig(config: AppVideoConfig) = launchSafely {
         val previous = videoConfig
@@ -614,15 +622,76 @@ class AppEngine private constructor(
         val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
         val was = resolveVideo(previous)
         val now = resolveVideo(config)
-        val republish = now.maxBitrate != was.maxBitrate || now.simulcast != was.simulcast ||
-            config.codec != previous.codec || now.degradation != was.degradation
+        val republish = now.simulcast != was.simulcast || resolveCodec(config.codec) != resolveCodec(previous.codec)
+        val resize = now.height != was.height || now.fps != was.fps
+        val encoderOnly = now.maxBitrate != was.maxBitrate || now.degradation != was.degradation
+        debug("setVideoConfig ${was.height}p${was.fps}/${was.maxBitrate / 1000}kbps -> ${now.height}p${now.fps}/${now.maxBitrate / 1000}kbps republish=$republish resize=$resize encoder=$encoderOnly")
         if (republish) {
-            lp.setCameraEnabled(false)
-            lp.setCameraEnabled(true)
+            // setCameraEnabled(false/true) only mutes and unmutes the same
+            // track, so the new codec/simulcast never took effect; unpublish
+            // for real and publish a new track with the new defaults. Only the
+            // publisher connection renegotiates; subscriptions are untouched.
+            val pub = lp.videoTrackPublications.firstOrNull { it.second === track }?.first
+            val wasOn = pub?.muted != true
+            lp.videoTrackCaptureDefaults = lp.videoTrackCaptureDefaults.copy(position = track.options.position ?: lp.videoTrackCaptureDefaults.position)
+            debug("republish camera: unpublish")
+            lp.unpublishTrack(track)
+            if (wasOn) lp.setCameraEnabled(true)
+            debug("republish camera: published=${localVideoTrack != null}")
         } else {
-            track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
+            if (resize) track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
+            if (encoderOnly && !applyEncoderParams(track, was.maxBitrate, now.maxBitrate, now.degradation)) {
+                debug("encoder parameters not reachable; bitrate applies at the next publish")
+            }
         }
         notifyLocalVideoChanged()
+    }
+
+    /** Bitrate / degradation straight on the sender: no republish, no renegotiation. */
+    private fun applyEncoderParams(track: io.livekit.android.room.track.LocalVideoTrack, oldMax: Int, newMax: Int, degradation: AppVideoDegradation): Boolean {
+        val sender = TrackAccess.sender(track) ?: return false
+        return try {
+            val params = sender.parameters
+            val single = params.encodings.size <= 1
+            params.encodings.forEach { e ->
+                val cur = e.maxBitrateBps
+                e.maxBitrateBps = if (single || cur == null || oldMax <= 0) newMax else (cur.toLong() * newMax / oldMax).toInt()
+            }
+            degradationOf(degradation)?.let { params.degradationPreference = it }
+            val ok = sender.setParameters(params)
+            debug("encoder params max=${newMax / 1000}kbps layers=${params.encodings.size} degradation=$degradation ok=$ok")
+            ok
+        } catch (t: Throwable) { debug("encoder params failed: $t"); false }
+    }
+
+    /**
+     * A hook on every captured camera frame, before it is encoded and shown
+     * in your preview: brightness, beauty, filters. Pass null to remove it.
+     * Survives camera restarts, camera switches and republishes. Each frame is
+     * copied to CPU memory for the processor, which costs CPU; keep it off
+     * when not needed.
+     */
+    fun setVideoProcessor(processor: AppVideoProcessor?) {
+        videoProcessor = processor
+        appliedProcessorTrack = null
+        onMain { applyVideoProcessor() }
+    }
+
+    private var videoProcessor: AppVideoProcessor? = null
+    private var appliedProcessorTrack: VideoTrack? = null
+    private var appliedSource: livekit.org.webrtc.VideoSource? = null
+
+    private fun applyVideoProcessor() {
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack
+        val source = track?.let { TrackAccess.source(it) }
+        if (track === appliedProcessorTrack && source === appliedSource) return
+        appliedProcessorTrack = track
+        appliedSource = source
+        if (source == null) { if (track != null && videoProcessor != null) debug("video processor: capture source not reachable"); return }
+        try {
+            source.setVideoProcessor(videoProcessor?.let { ProcessorAdapter(it) })
+            debug("video processor ${if (videoProcessor != null) "installed" else "removed"}")
+        } catch (t: Throwable) { debug("video processor failed: $t") }
     }
 
     /** The camera settings in force right now. */
@@ -700,22 +769,96 @@ class AppEngine private constructor(
 
     /**
      * Which simulcast layer to receive from one user's camera. Use LOW for a
-     * small tile or a weak link, HIGH for the spotlight. The default is
-     * automatic from the view size.
+     * small tile or a weak link, HIGH for the spotlight. Only matters when the
+     * sender publishes several layers (simulcast, i.e. [AppVideoMode.ADAPTIVE]).
+     *
+     * With adaptive stream on (ADAPTIVE mode, unless
+     * [AppEngineOptions.adaptiveStream] is false) the layer follows the size of
+     * the view showing the video and this call has no effect; it is logged
+     * through the debug log. Turn adaptive stream off to choose layers by hand.
      */
     fun setRemoteVideoQuality(uid: String, quality: AppRemoteQuality) {
         val u = users[uid] ?: return
         val q = when (quality) { AppRemoteQuality.LOW -> VideoQuality.LOW; AppRemoteQuality.MEDIUM -> VideoQuality.MEDIUM; AppRemoteQuality.HIGH -> VideoQuality.HIGH }
-        u.raw.videoTrackPublications.forEach { (pub, _) -> (pub as? RemoteTrackPublication)?.setVideoQuality(q) }
+        u.raw.videoTrackPublications.forEach { (pub, _) ->
+            val rp = pub as? RemoteTrackPublication ?: return@forEach
+            if (rp.isAutoManaged) debug("setRemoteVideoQuality uid=$uid ignored: adaptive stream picks the layer from the view size")
+            else rp.setVideoQuality(q)
+        }
     }
 
     /**
      * Stop receiving one user's video while keeping their audio: the manual
      * audio-only fallback for a weak network or a tile scrolled off screen.
+     *
+     * With adaptive stream on, the engine ignores a pause request, so the SDK
+     * unsubscribes the video instead (and subscribes again on `true`, about a
+     * second until the first frame). Views attached to the user pick the video
+     * up again by themselves.
      */
     fun setRemoteVideoEnabled(uid: String, enabled: Boolean) {
         val u = users[uid] ?: return
-        u.raw.videoTrackPublications.forEach { (pub, _) -> (pub as? RemoteTrackPublication)?.setEnabled(enabled) }
+        if (enabled) videoDisabled.remove(uid) else videoDisabled.add(uid)
+        u.raw.videoTrackPublications.forEach { (pub, _) ->
+            val rp = pub as? RemoteTrackPublication ?: return@forEach
+            if (rp.isAutoManaged) {
+                debug("setRemoteVideoEnabled uid=$uid enabled=$enabled via subscription (adaptive stream on)")
+                rp.setSubscribed(enabled)
+            } else {
+                if (enabled && !rp.subscribed) rp.setSubscribed(true)
+                rp.setEnabled(enabled)
+            }
+        }
+    }
+
+    // Users whose video the app turned off; the stall watchdog leaves them alone.
+    private val videoDisabled = HashSet<String>()
+    private val stallSince = HashMap<String, Long>()
+    private val lastRecovery = HashMap<String, Long>()
+
+    /**
+     * Drop and re-take the subscription to one user's camera (and microphone,
+     * when [includeAudio] is true, or when their audio is published but not
+     * being received). The remedy for a remote picture stuck at 0 fps while
+     * the sender is sending: the first frame is usually back within about a
+     * second. Views attached to the user re-bind by themselves. Does nothing
+     * for an unknown uid.
+     */
+    @JvmOverloads
+    fun resubscribe(uid: String, includeAudio: Boolean = false) = launchSafely {
+        val u = users[uid] ?: return@launchSafely
+        val video = u.raw.videoTrackPublications.mapNotNull { it.first as? RemoteTrackPublication }
+        val audio = u.raw.audioTrackPublications.mapNotNull { it.first as? RemoteTrackPublication }
+            .filter { includeAudio || !it.subscribed }
+        debug("resubscribe uid=$uid video=${video.size} audio=${audio.size}")
+        (video + audio).forEach { it.setSubscribed(false) }
+        delay(250)
+        (video + audio).forEach { it.setSubscribed(true) }
+        stallSince.remove(uid)
+    }
+
+    /**
+     * Stall watchdog, run on each stats tick. A remote camera shown in a
+     * visible view whose sender is publishing, received at 0 fps for more
+     * than 4 s, is resubscribed; at most once per 15 s per user.
+     */
+    private fun watchStalls(remote: List<AppRemoteStats>) {
+        if (!options.autoRecoverStalledVideo) return
+        val now = System.currentTimeMillis()
+        val shown = remoteViews.filter { it.isShown }.mapNotNull { it.boundUid }.toSet()
+        for (u in users.values) {
+            val uid = u.uid
+            val pub = u.raw.videoTrackPublications.firstOrNull()?.first as? RemoteTrackPublication
+            val live = pub != null && !pub.muted && uid in shown && uid !in videoDisabled
+            val fps = remote.firstOrNull { it.uid == uid }?.videoFps ?: 0
+            if (!live || fps > 0) { stallSince.remove(uid); continue }
+            val since = stallSince.getOrPut(uid) { now }
+            if (now - since <= 4_000) continue
+            if (now - (lastRecovery[uid] ?: 0L) < 15_000) continue
+            lastRecovery[uid] = now
+            debug("video stalled uid=$uid 0fps for ${(now - since) / 1000}s; resubscribing")
+            resubscribe(uid)
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -854,6 +997,10 @@ class AppEngine private constructor(
     internal val localVideoTrack: VideoTrack?
         get() = room.localParticipant.videoTrackPublications.firstNotNullOfOrNull { it.second as? VideoTrack }
 
+    /** Whether the local camera faces the user (drives the default self-view mirror). */
+    internal val localCameraIsFront: Boolean
+        get() = (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.options?.position != io.livekit.android.room.track.CameraPosition.BACK
+
     /** Prepares a renderer view to receive frames. Used by [AppVideoView]. */
     internal fun initRenderer(view: io.livekit.android.renderer.TextureViewRenderer) { room.initVideoRenderer(view) }
 
@@ -861,7 +1008,10 @@ class AppEngine private constructor(
     internal val trackWaiters = LinkedHashSet<AppVideoView>()
     // Views showing the local camera; re-bound on every local track change.
     internal val localViews = LinkedHashSet<AppVideoView>()
+    // Views showing a remote camera; re-bound when that user's track is replaced.
+    internal val remoteViews = LinkedHashSet<AppVideoView>()
     private var lastLocalTrack: VideoTrack? = null
+    private var lastLocalRtc: livekit.org.webrtc.VideoTrack? = null
     private var joinStartedAt = 0L
     private val firstFrameSeen = HashSet<String>()
     private fun elapsedSinceJoin() = if (joinStartedAt == 0L) 0L else System.currentTimeMillis() - joinStartedAt
@@ -872,8 +1022,13 @@ class AppEngine private constructor(
      */
     internal fun notifyLocalVideoChanged() {
         val now = localVideoTrack
-        val changed = now !== lastLocalTrack
+        // A restart (resolution change) keeps the track object and swaps the
+        // native track inside it, so compare both.
+        val rtc = try { now?.rtcTrack } catch (_: Throwable) { null }
+        val changed = now !== lastLocalTrack || rtc !== lastLocalRtc
         lastLocalTrack = now
+        lastLocalRtc = rtc
+        applyVideoProcessor()
         localViews.toList().forEach { it.refreshLocal(this) }
         trackWaiters.toList().forEach { it.localTrackArrived(this) }
         if (changed) onMain { eventHandler?.onLocalVideoChanged() }
@@ -965,10 +1120,11 @@ class AppEngine private constructor(
                     if (localVideoTrack != null) reportLocalQuality(reports[0], secs) else { lastQuality = null; lastVideoBytes = 0L }
                     // Belt and braces for self-views: if the local track was swapped
                     // by a path that raised no event, the next tick re-binds it.
-                    if (localVideoTrack !== lastLocalTrack) notifyLocalVideoChanged()
+                    if (localVideoTrack !== lastLocalTrack || localVideoTrack?.rtcTrack !== lastLocalRtc) notifyLocalVideoChanged()
                     // Per-remote-user health — which picture is stuck, whose audio is dropping.
                     val remote = users.values.mapNotNull { u -> remoteStatsFor(u) }
                     if (remote.isNotEmpty()) eventHandler?.onRemoteStats(remote)
+                    watchStalls(remote)
                 } catch (_: Throwable) { /* stats are best effort */ }
             }
         }
@@ -1099,6 +1255,7 @@ class AppEngine private constructor(
                         eventHandler?.onTrackSubscribed(u)
                         if (event.track is VideoTrack) {
                             trackWaiters.toList().forEach { it.trackArrived(this@AppEngine, u) }
+                            remoteViews.toList().forEach { it.remoteTrackChanged(this@AppEngine, u) }
                             // Time-to-first-frame, once per user per join.
                             if (firstFrameSeen.add(u.uid)) FirstFrameSink(u.uid, event.track as VideoTrack).start()
                         }
@@ -1106,6 +1263,9 @@ class AppEngine private constructor(
                     is RoomEvent.TrackPublished ->
                         if (event.participant === room.localParticipant) notifyLocalVideoChanged()
                         else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
+                    is RoomEvent.TrackUnsubscribed -> (event.participant as? RemoteParticipant)?.let { p ->
+                        if (event.track is VideoTrack) users[p.identity?.value]?.let { u -> remoteViews.toList().forEach { it.remoteTrackChanged(this@AppEngine, u) } }
+                    }
                     is RoomEvent.TrackUnpublished -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.TrackMuted -> (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     // Camera off→on keeps the publication and swaps the track underneath:
@@ -1189,6 +1349,7 @@ class AppEngine private constructor(
     /** Release all resources. */
     fun destroy() {
         leaveChannel()
+        SharedAudio.unlisten(this)
         scope.launch { room.release() }
     }
 }

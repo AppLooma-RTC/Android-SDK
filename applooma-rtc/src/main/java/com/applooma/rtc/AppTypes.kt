@@ -213,6 +213,21 @@ data class AppEngineOptions @JvmOverloads constructor(
      */
     val softwareEchoCancellation: Boolean = false,
     val audio: AppAudioOptions = AppAudioOptions(),
+    /**
+     * Adaptive stream: lower a remote camera's layer for a small or hidden
+     * view and pause it when no view shows it. `null` (default) lets
+     * [AppVideoConfig.mode] decide: on in [AppVideoMode.ADAPTIVE], off in
+     * STABLE_HD and ULTRA_HD_4K. `false` turns it off in ADAPTIVE too, which
+     * also makes [AppEngine.setRemoteVideoQuality] take effect.
+     */
+    val adaptiveStream: Boolean? = null,
+    /**
+     * Stalled-video recovery. While a remote camera is attached to a visible
+     * [AppVideoView] and its sender is publishing, a received frame rate of 0
+     * for more than 4 seconds makes the engine call [AppEngine.resubscribe]
+     * for that user (at most once per 15 seconds per user).
+     */
+    val autoRecoverStalledVideo: Boolean = true,
 )
 
 /** Milestones on the way to seeing a remote picture, each with elapsed ms since joinChannel. */
@@ -294,9 +309,17 @@ data class AppMessage(
     val text: String? = null,
     /** What was sent, when it was given a map. */
     val data: Map<String, Any?>? = null,
-    /** Who sent it. Null if it came from your own server. */
+    /**
+     * Who sent it. Taken from the connection the message arrived on, not from
+     * the payload, so a client cannot claim to be someone else; compare
+     * `from.uid` with the uid your server issued the token for. Null if it
+     * came from your own server (server-side send) or on messages you created.
+     */
     val from: AppRemoteUser? = null,
-    /** The sender's clock, not ours — do not order messages by it alone. */
+    /**
+     * On a sent message, when you sent it. On a received message, when it
+     * arrived on this phone (the sender's own timestamp is not trusted).
+     */
     val sentAt: Date = Date(),
 )
 
@@ -384,7 +407,16 @@ abstract class AppEventHandler {
     open fun onUserLeft(user: AppRemoteUser) {}
     open fun onTrackSubscribed(user: AppRemoteUser) {}
     open fun onDisconnected(reason: String?) {}
-    /** Someone sent a message with sendMessage(). */
+    /**
+     * Someone sent a message with sendMessage(). `text` and `data` are exactly
+     * what the sender passed; values inside `data` arrive as JSON types
+     * (String, Number, Boolean, JSONObject, JSONArray, or JSONObject.NULL).
+     * `from` is set by the server from the sender's connection and cannot be
+     * forged by a client. Your own messages are not echoed back. Before a
+     * join completes, up to 50 outgoing messages are queued (the oldest are
+     * dropped beyond that); keep each message under about 15 KB. Raw bytes
+     * from sendData() arrive in onDataReceived, never here.
+     */
     open fun onMessage(message: AppMessage) {}
 
     /**
@@ -480,4 +512,39 @@ data class AppGiftEvent(
             }
         } catch (_: Exception) { null }
     }
+}
+
+/**
+ * One captured camera frame in I420 (YUV 4:2:0) layout, handed to an
+ * [AppVideoProcessor]. The planes are direct ByteBuffers that may be edited in
+ * place. `rotation` (0/90/180/270) is how the frame must be turned to be
+ * upright; `width`/`height` are before that rotation.
+ *
+ * To return a different frame (a resized or re-drawn one), construct a new
+ * AppVideoFrame with direct ByteBuffers and even width/height.
+ */
+class AppVideoFrame(
+    val width: Int,
+    val height: Int,
+    val dataY: java.nio.ByteBuffer,
+    val strideY: Int,
+    val dataU: java.nio.ByteBuffer,
+    val strideU: Int,
+    val dataV: java.nio.ByteBuffer,
+    val strideV: Int,
+    val rotation: Int,
+    val timestampNs: Long,
+)
+
+/**
+ * Capture-side frame hook: brightness, beauty, filters, watermarks. Runs on
+ * the camera thread for every frame before it is encoded; what it returns is
+ * both sent and shown in your own preview. Keep it fast (a 1080p30 camera
+ * leaves ~33 ms per frame, including a GPU-to-CPU copy the SDK does for you).
+ * An exception thrown here sends the original frame.
+ *
+ * Install with [AppEngine.setVideoProcessor].
+ */
+fun interface AppVideoProcessor {
+    fun process(frame: AppVideoFrame): AppVideoFrame
 }

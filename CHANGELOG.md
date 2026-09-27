@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Remote video no longer stays at 0 fps after a layout change with adaptive stream on. `AppVideoView` remembers what it shows and re-binds when it returns to a window (it used to stop for good once it left one), and follows a remote user's camera through unsubscribe/resubscribe. New `AppEngine.resubscribe(uid, includeAudio = false)`. New `AppEngineOptions.autoRecoverStalledVideo` (default true): a remote camera in a visible view, whose sender is publishing, received at 0 fps for more than 4 s is resubscribed, at most once per 15 s per user, and logged in the debug log.
+- `AppEngineOptions.adaptiveStream: Boolean?` (null = by mode: on in ADAPTIVE, off in STABLE_HD / ULTRA_HD_4K), so ADAPTIVE users can turn it off.
+- `setRemoteVideoEnabled` works with adaptive stream on: the engine ignored the pause request there, so the SDK now unsubscribes/subscribes the video instead. `setRemoteVideoQuality` is still ignored with adaptive stream on (the view size picks the layer); this is now logged and documented.
+- Local preview: a view attached with `attachLocal` no longer freezes after a seat change or a move between layouts (leaving the window dropped it from the self-view registry), and re-binds when a restart swaps the native track inside the same track object. `onLocalVideoChanged` also fires for those restarts.
+- `setVideoConfig`: the "republish" path only muted and unmuted the same camera track, so bitrate, codec and simulcast changes never took effect and every viewer saw the camera mute. Bitrate and degradation now change on the live encoder with no interruption; a codec or simulcast change unpublishes and publishes a new track; resolution/fps restart the camera in place. Subscriptions are not touched. Debug log lines around each step.
+- Several engines (a PK battle) share one audio route. An engine created or joining while another is in a channel adopts that engine's audio scenario and route (logging a warning when its own differs) instead of moving everyone to the earpiece; the route is released only when the last engine leaves.
+- `AppVideoView.setMirror(Boolean)` / `resetMirror()`: view-only mirroring, front-camera self-view mirrored by default.
+- `AppEngine.setVideoProcessor(AppVideoProcessor?)`: capture-side frame hook on I420 `AppVideoFrame`s, before encoding and preview; survives restarts and republishes.
+- `onMessage` docs: payload types, how `from` is verified, arrival-time `sentAt`, queue limit.
 - `setMicGain()` and `setAgcTargetLevel()` no longer silence the microphone. The engine hands the microphone stage floats in 16-bit range (±32768); the processor assumed ±1, so any gain other than unity squashed the voice to ±1 in the limiter. It now detects the scale and works in true dBFS, which also makes the noise gate levels correct. Covered by unit tests.
 
 ## rtc-android 0.4.12
