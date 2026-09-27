@@ -20,6 +20,10 @@ AppLoomaCall(kit, room = "call-abc", video = true, onLeave = { finish() })
 
 The screens ask for camera and microphone permission when they join.
 
+On Android 12 and above the dialog also asks for `BLUETOOTH_CONNECT` so Bluetooth
+headsets work; refusing it does not block the join. Requires `com.applooma:rtc-android`
+0.4.10 or newer, which the kit pulls in.
+
 ## From Java (or any non-Compose app)
 
 ```java
