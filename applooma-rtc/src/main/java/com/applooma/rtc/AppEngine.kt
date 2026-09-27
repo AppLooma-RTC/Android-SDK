@@ -894,6 +894,7 @@ class AppEngine private constructor(
     }
 
     private var lastQuality: AppVideoQualityInfo? = null
+    private var lastAvailableOutKbps = -1
     private var lastVideoBytes = 0L
 
     private fun reportLocalQuality(report: livekit.org.webrtc.RTCStatsReport?, secs: Double) {
@@ -901,6 +902,10 @@ class AppEngine private constructor(
             ?.filter { it.type == "outbound-rtp" && (it.members["kind"] ?: it.members["mediaType"]) == "video" }
             ?: return
         if (video.isEmpty()) return
+        lastAvailableOutKbps = report.statsMap.values
+            .filter { it.type == "candidate-pair" && (it.members["nominated"] as? Boolean) == true }
+            .mapNotNull { (it.members["availableOutgoingBitrate"] as? Number)?.toInt() }
+            .maxOrNull()?.div(1000) ?: -1
         val bytes = video.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0L }
         val kbps = if (lastVideoBytes > 0) (((bytes - lastVideoBytes).coerceAtLeast(0) * 8) / secs / 1000).toInt() else 0
         lastVideoBytes = bytes
@@ -927,7 +932,10 @@ class AppEngine private constructor(
         lastQuality = q
         if (prev == null) return // the first sample is the baseline, not a change
         val same = prev.width == q.width && prev.height == q.height && prev.layer == q.layer && prev.reason == q.reason && kotlin.math.abs(prev.fps - q.fps) < 5
-        if (!same) eventHandler?.onVideoQualityChanged(q)
+        if (!same) {
+            debug("video out ${q.width}x${q.height} ${q.fps}fps ${q.bitrateKbps}kbps layer=${q.layer} limit=${q.reason} uplinkEstimate=${lastAvailableOutKbps}kbps")
+            eventHandler?.onVideoQualityChanged(q)
+        }
     }
 
     private suspend fun trackStats(track: Track?): livekit.org.webrtc.RTCStatsReport? {

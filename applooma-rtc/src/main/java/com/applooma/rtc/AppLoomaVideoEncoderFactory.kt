@@ -230,6 +230,11 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
                 if (info.isAlias || !info.isHardwareAccelerated) return false
             } else if (HARDWARE_PREFIXES.none { name.startsWith(it, true) }) return false
             if (mime.equals("video/avc", true) && Build.MODEL in H264_EXCEPTION_MODELS) return false
+            // MediaTek H.264: the encoder runs and the server receives packets,
+            // but no other phone can bind/decode the stream (verified 2026-09-27
+            // on realme RMX3941 c2.mtk.avc.encoder -> vivo V2419 showed black).
+            // Those phones stay on VP8 until a MediaTek-specific format fix exists.
+            if (mime.equals("video/avc", true) && isMediaTek(name)) return false
             return true
         }
 
