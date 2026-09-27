@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Encoder self-test: new `AppEngine.runEncoderSelfTest(context, callback)`. It encodes about 30 synthetic 720p frames through the hardware H.264 encoder the SDK would use (never the camera) and checks for parameter sets or a key frame and real output within 2 s; background thread, 3 s total timeout, every codec released. Runs by itself once per install and SDK version after the first `create()`; turn off with `AppEngineOptions.encoderSelfTest = false`. A failing encoder is remembered for 30 days (software path from the first publish) and an anonymous `encoder_error` device report is kept on the phone and sent with the next join (reports need a join token). New `AppEncoderSelfTestResult`. Decision rules covered by unit tests.
+- Region hint: `AppEngineOptions.region` (`AppRegion.AUTO`, `BD`, `IN`, `SA`, `SG`, `US`; default `AUTO`). Preparation for multi-region: the token endpoint still returns one server URL, so today the value is only sent with the device-tuning request and device reports, and logged at join.
+- Pre-call network test: `startNetworkTest(serverUrl, token, callback)` / `stopNetworkTest()`. A separate short connection (nothing published) sampled for about 5 s; `AppNetworkTestResult` with uplink/downlink quality, RTT, jitter and loss, or `error` (10 s timeout). No echo test on Android yet.
+- Network fallback: `setRemoteSubscribeFallback(option)` and `setLocalPublishFallback(option)` with `AppFallbackOption.NONE`, `VIDEO_LOW_QUALITY`, `AUDIO_ONLY`. Poor network for about 4 s starts it, good for about 10 s restores it. New `AppEventHandler.onFallbackStateChanged(isLocal, state)`.
+- Token renewal: `AppEventHandler.onTokenWillExpire(token)` about 30 s before the token's expiry (decoded locally), and `renewToken(token)`, which replaces the token the SDK uses for its own requests and re-arms the warning. The live connection's credential is refreshed by the media server while connected.
+
 ## rtc-android 0.4.15 · uikit-android 0.2.8 — 2026-09-27
 
 - uikit-android 0.2.8: built on rtc-android 0.4.15, so the UIKit screens get automatic codec recovery and per-device video settings. No UIKit API changes.

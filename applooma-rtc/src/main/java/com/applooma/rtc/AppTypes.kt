@@ -228,6 +228,58 @@ data class AppEngineOptions @JvmOverloads constructor(
      * for that user (at most once per 15 seconds per user).
      */
     val autoRecoverStalledVideo: Boolean = true,
+    /**
+     * Run the encoder self-test ([AppEngine.runEncoderSelfTest]) once per
+     * install and SDK version, in the background after the first
+     * [AppEngine.create]. It never touches the camera. Unreleased.
+     */
+    val encoderSelfTest: Boolean = true,
+    /**
+     * Where your users are, as a hint for server selection. Preparation for
+     * multi-region: today every region connects to the server URL your token
+     * endpoint returns; the value is sent with the SDK's device-tuning
+     * request and reports. Unreleased.
+     */
+    val region: AppRegion = AppRegion.AUTO,
+)
+
+/** Region hint, see [AppEngineOptions.region]. Unreleased. */
+enum class AppRegion(val code: String) { AUTO("auto"), BD("bd"), IN("in"), SA("sa"), SG("sg"), US("us") }
+
+/**
+ * What the SDK gives up when the network cannot carry everything.
+ * NONE keeps everything (default); VIDEO_LOW_QUALITY drops to the low layer
+ * (receiving) or a lower bitrate (sending); AUDIO_ONLY drops video entirely
+ * until the network recovers. See [AppEngine.setRemoteSubscribeFallback] and
+ * [AppEngine.setLocalPublishFallback]. Unreleased.
+ */
+enum class AppFallbackOption { NONE, VIDEO_LOW_QUALITY, AUDIO_ONLY }
+
+/** The result of [AppEngine.runEncoderSelfTest]. Unreleased. */
+data class AppEncoderSelfTestResult(
+    /** True when the encoder produced a decodable start (parameter sets or a key frame) and data in time, or there was nothing to test. */
+    val passed: Boolean,
+    /** Hardware encoder tested, or null when the phone has none the SDK would use (then nothing was tested). */
+    val encoderName: String?,
+    /** Why it failed: `"no_output"`, `"no_key_frame"`, `"encoder_error"`, `"timeout"`; null on success. */
+    val reason: String?,
+    val elapsedMs: Long,
+)
+
+/** The result of [AppEngine.startNetworkTest]. Unreleased. */
+data class AppNetworkTestResult(
+    val uplinkQuality: AppNetworkQuality,
+    val downlinkQuality: AppNetworkQuality,
+    /** Round-trip time to the media server in milliseconds, -1 if unknown. */
+    val rttMs: Int,
+    /** Incoming jitter in milliseconds, -1 if unknown. */
+    val jitterMs: Int,
+    /** Fraction of outgoing packets lost, 0..1. */
+    val uplinkLoss: Float,
+    /** Fraction of incoming packets lost, 0..1. */
+    val downlinkLoss: Float,
+    /** Null on success, otherwise why the test could not run. */
+    val error: String? = null,
 )
 
 /** Milestones on the way to seeing a remote picture, each with elapsed ms since joinChannel. */
@@ -496,6 +548,20 @@ abstract class AppEventHandler {
      * so later sessions start on the working path.
      */
     open fun onVideoCodecFallback(from: String, to: String, reason: String) {}
+
+    /**
+     * A network fallback started or ended. `isLocal` true is what you send
+     * ([AppEngine.setLocalPublishFallback]), false is what you receive
+     * ([AppEngine.setRemoteSubscribeFallback]). `state` is the fallback now in
+     * effect; NONE means everything was restored. Unreleased.
+     */
+    open fun onFallbackStateChanged(isLocal: Boolean, state: AppFallbackOption) {}
+    /**
+     * The join token expires in about 30 seconds (read from the token itself).
+     * Fetch a new one from your server and pass it to [AppEngine.renewToken].
+     * Unreleased.
+     */
+    open fun onTokenWillExpire(token: String) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */

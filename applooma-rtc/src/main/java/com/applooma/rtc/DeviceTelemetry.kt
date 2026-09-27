@@ -28,11 +28,14 @@ internal object DeviceTelemetry {
     private const val TIMEOUT_MS = 3_000
     private const val FLUSH_DELAY_MS = 5_000L
     private const val MAX_BATCH = 20
+    private const val MAX_PENDING = 5
 
     @Volatile var current: DeviceVideoConfig = DeviceVideoConfig.EMPTY
         private set
     @Volatile private var loaded = false
     @Volatile private var fetching = false
+    /** Region hint from [AppEngineOptions.region], sent with the config request and every report. */
+    @Volatile var region: String = AppRegion.AUTO.code
 
     private val io = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "applooma-device").apply { isDaemon = true } }
 
@@ -59,7 +62,9 @@ internal object DeviceTelemetry {
      * its ttl. [onChanged] runs on the worker thread when a new answer arrived.
      */
     fun refresh(context: Context, token: String, onChanged: () -> Unit) {
-        if (fetching || token.isBlank()) return
+        if (token.isBlank()) return
+        flushWithoutJoin(context, token)
+        if (fetching) return
         fetching = true
         val app = context.applicationContext
         try {
@@ -121,7 +126,54 @@ internal object DeviceTelemetry {
     fun report(token: String?, outcome: String, codec: String, encoderName: String?, fromCodec: String? = null, toCodec: String? = null) {
         if (token.isNullOrBlank()) return
         try {
-            val item = JSONObject().apply {
+            val item = item(outcome, codec, encoderName, fromCodec, toCodec)
+            synchronized(queue) {
+                queue += token to item
+                if (!flushScheduled) {
+                    flushScheduled = true
+                    io.schedule({ flush() }, FLUSH_DELAY_MS, TimeUnit.MILLISECONDS)
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * A report with no join token yet (the encoder self-test runs before any
+     * join). Reports need a join token, so it is kept on the phone and sent
+     * with the next join. At most [MAX_PENDING] are kept.
+     */
+    fun reportWithoutJoin(context: Context, outcome: String, codec: String, encoderName: String?) {
+        try {
+            val prefs = prefs(context)
+            synchronized(queue) {
+                val list = try { JSONArray(prefs.getString("pending", "[]")) } catch (_: Throwable) { JSONArray() }
+                if (list.length() >= MAX_PENDING) return
+                list.put(item(outcome, codec, encoderName, null, null))
+                prefs.edit().putString("pending", list.toString()).apply()
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun flushWithoutJoin(context: Context, token: String) {
+        try {
+            val prefs = prefs(context)
+            val list = synchronized(queue) {
+                val raw = prefs.getString("pending", null) ?: return
+                prefs.edit().remove("pending").apply()
+                try { JSONArray(raw) } catch (_: Throwable) { return }
+            }
+            synchronized(queue) {
+                for (i in 0 until list.length()) list.optJSONObject(i)?.let { queue += token to it.put("region", region) }
+                if (!flushScheduled && list.length() > 0) {
+                    flushScheduled = true
+                    io.schedule({ flush() }, FLUSH_DELAY_MS, TimeUnit.MILLISECONDS)
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun item(outcome: String, codec: String, encoderName: String?, fromCodec: String?, toCodec: String?): JSONObject =
+            JSONObject().apply {
                 put("sdkPlatform", "android")
                 put("sdkVersion", clean(BuildConfig.SDK_VERSION, 32))
                 put("osName", "Android")
@@ -134,16 +186,8 @@ internal object DeviceTelemetry {
                 put("outcome", outcome)
                 fromCodec?.let { put("fromCodec", it.lowercase()) }
                 toCodec?.let { put("toCodec", it.lowercase()) }
+                put("region", region)
             }
-            synchronized(queue) {
-                queue += token to item
-                if (!flushScheduled) {
-                    flushScheduled = true
-                    io.schedule({ flush() }, FLUSH_DELAY_MS, TimeUnit.MILLISECONDS)
-                }
-            }
-        } catch (_: Throwable) {}
-    }
 
     private fun flush() {
         val items: List<Pair<String, JSONObject>>
@@ -189,6 +233,7 @@ internal object DeviceTelemetry {
         "model" to Build.MODEL,
         "osVersion" to (Build.VERSION.RELEASE ?: Build.VERSION.SDK_INT.toString()),
         "encoder" to encoder(),
+        "region" to region,
     )
 
     private fun query(): String = fields().filter { !it.second.isNullOrBlank() }

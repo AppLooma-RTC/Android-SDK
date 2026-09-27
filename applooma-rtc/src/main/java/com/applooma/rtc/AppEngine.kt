@@ -448,8 +448,30 @@ class AppEngine private constructor(
         fun create(context: Context, appId: String, eventHandler: AppEventHandler? = null, options: AppEngineOptions = AppEngineOptions()): AppEngine {
             require(appId.isNotBlank()) { "AppEngine.create: appId is required" }
             CodecMemory.apply(context)
+            DeviceTelemetry.region = options.region.code
             DeviceTelemetry.load(context)
-            return AppEngine(context, appId, eventHandler, options)
+            val engine = AppEngine(context, appId, eventHandler, options)
+            // Once per install and SDK version, in the background; never the camera.
+            EncoderSelfTest.runOnceIfDue(context, options.encoderSelfTest)
+            return engine
+        }
+
+        /**
+         * Encode about 30 synthetic 720p frames through the hardware H.264
+         * encoder the SDK would use, and check that it produces parameter sets
+         * or a key frame and real output within 2 s. Never touches the camera;
+         * runs on a background thread and gives up after 3 s. A failing encoder
+         * is remembered on this phone (like one found bad during a call), so
+         * later publishes use the software path, and an anonymous device report
+         * is sent with the next join. [callback] runs on the main thread.
+         *
+         * Runs by itself once per install and SDK version after the first
+         * [create] unless [AppEngineOptions.encoderSelfTest] is false; call it
+         * yourself for a support screen. Unreleased.
+         */
+        @JvmStatic
+        fun runEncoderSelfTest(context: Context, callback: (AppEncoderSelfTestResult) -> Unit) {
+            EncoderSelfTest.run(context, callback)
         }
     }
 
@@ -468,6 +490,7 @@ class AppEngine private constructor(
         firstFrameSeen.clear()
         resetCodecRecovery()
         joinToken = token
+        armTokenTimer(token)
         // Device tuning: this join uses the cached answer (already in the room
         // options); a fresh one is fetched in the background and applies to
         // the next publish. Never blocks the join.
@@ -475,7 +498,7 @@ class AppEngine private constructor(
         subscribeEvents()
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
-        debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=${BuildConfig.SDK_VERSION} device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
+        debug("joinChannel region=${this.options.region.code} role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=${BuildConfig.SDK_VERSION} device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
         publishedCodec.let { debug("video codec=$it ${AppLoomaVideoEncoderFactory.describe(it)}") }
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
@@ -509,6 +532,8 @@ class AppEngine private constructor(
     }
 
     fun leaveChannel() {
+        tokenTimer?.cancel(); tokenTimer = null
+        resetFallbacks()
         mixer.stop()
         statsJob?.cancel(); statsJob = null
         room.disconnect()
@@ -534,7 +559,7 @@ class AppEngine private constructor(
     // Fire-and-forget for Java callers, so a failure (missing CAMERA
     // permission, publish rejected) is reported rather than thrown from a
     // coroutine, where it would crash the host application.
-    fun enableCamera(on: Boolean) = launchSafely { room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged() }
+    fun enableCamera(on: Boolean) = launchSafely { localFallbackMuted = false; room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged() }
     /**
      * Turn your microphone on or off. Music is independent of it: while a
      * song is playing, muting sends silence in place of your voice but keeps
@@ -1317,6 +1342,7 @@ class AppEngine private constructor(
                     )
                     prevOutSent = outSent; prevOutLost = outLost; prevInRecv = inRecv; prevInLost = inLost; prevBytesOut = bytesOut; prevBytesIn = bytesIn; prevAt = now
                     eventHandler?.onStats(stats)
+                    applyFallbacks(stats)
                     // What our own camera is sending: the top simulcast layer
                     // that carries frames, reported only when it changes.
                     if (localVideoTrack != null) reportLocalQuality(reports[0], secs) else { lastQuality = null; lastVideoBytes = 0L }
@@ -1490,6 +1516,8 @@ class AppEngine private constructor(
                     is RoomEvent.Disconnected -> {
                         debug("disconnected reason=${event.reason?.name} error=${event.error}")
                         isJoined = false
+                        tokenTimer?.cancel(); tokenTimer = null
+                        resetFallbacks()
                         mixer.stop()
                         statsJob?.cancel()
                         // Report everyone as gone; a stale roster after a
@@ -1555,8 +1583,243 @@ class AppEngine private constructor(
         if (roleChanged) eventHandler?.onRoleChanged(role)
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Token renewal                                                       */
+    /* ------------------------------------------------------------------ */
+
+    private var tokenTimer: Job? = null
+
+    private fun armTokenTimer(token: String) {
+        tokenTimer?.cancel()
+        val wait = TokenExpiry.warnDelayMs(token, System.currentTimeMillis()) ?: return
+        tokenTimer = scope.launch {
+            delay(wait)
+            if (joinToken == token) {
+                debug("join token expires in about ${TokenExpiry.WARN_BEFORE_MS / 1000} s")
+                eventHandler?.onTokenWillExpire(token)
+            }
+        }
+    }
+
+    /**
+     * Replace the join token after [AppEventHandler.onTokenWillExpire]. The
+     * SDK uses it from now on for its own requests and for a later join, and
+     * warns again 30 s before the new one expires. While you are connected
+     * the media server keeps the live connection's credential fresh by
+     * itself, so the call is not interrupted. Unreleased.
+     */
+    fun renewToken(token: String) {
+        if (token.isBlank()) return
+        joinToken = token
+        if (isJoined) armTokenTimer(token)
+        debug("join token renewed")
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Network fallback                                                    */
+    /* ------------------------------------------------------------------ */
+
+    private var subscribeFallback = AppFallbackOption.NONE
+    private var publishFallback = AppFallbackOption.NONE
+    private val downlinkPolicy = FallbackPolicy()
+    private val uplinkPolicy = FallbackPolicy()
+    /** Users whose video the subscribe fallback turned off (to turn back on). */
+    private val fallbackHidden = HashSet<String>()
+    /** The publish fallback muted the camera and will unmute it. */
+    private var localFallbackMuted = false
+    private var localFallbackBitrate: Pair<Int, Int>? = null
+
+    /**
+     * What to give up on the video you receive when your downlink is poor for
+     * about 4 s: VIDEO_LOW_QUALITY asks for every remote camera's low layer
+     * (only where the sender publishes layers and adaptive stream is off),
+     * AUDIO_ONLY stops receiving remote video. Everything comes back after
+     * about 10 s of good network; video you turned off yourself stays off.
+     * Reported by [AppEventHandler.onFallbackStateChanged] with isLocal false.
+     * Default NONE. Unreleased.
+     */
+    fun setRemoteSubscribeFallback(option: AppFallbackOption) {
+        if (option == subscribeFallback) return
+        if (downlinkPolicy.active) restoreSubscribe()
+        downlinkPolicy.reset()
+        subscribeFallback = option
+    }
+
+    /**
+     * What to give up on the video you send when your uplink is poor for
+     * about 4 s: VIDEO_LOW_QUALITY lowers the camera bitrate to 30 % (at
+     * least 300 kbps), AUDIO_ONLY pauses the camera. Restored after about
+     * 10 s of good network. Reported by [AppEventHandler.onFallbackStateChanged]
+     * with isLocal true. Default NONE. Unreleased.
+     */
+    fun setLocalPublishFallback(option: AppFallbackOption) {
+        if (option == publishFallback) return
+        if (uplinkPolicy.active) launchSafely { restorePublish() }
+        uplinkPolicy.reset()
+        publishFallback = option
+    }
+
+    private fun applyFallbacks(stats: AppStats) {
+        val now = System.currentTimeMillis()
+        if (subscribeFallback != AppFallbackOption.NONE) {
+            when (downlinkPolicy.onSample(now, FallbackPolicy.isPoor(stats.quality, stats.downloadLoss), FallbackPolicy.isGood(stats.quality, stats.downloadLoss))) {
+                true -> { debug("fallback subscribe -> $subscribeFallback"); eventHandler?.onFallbackStateChanged(false, subscribeFallback) }
+                false -> { restoreSubscribe(); debug("fallback subscribe restored"); eventHandler?.onFallbackStateChanged(false, AppFallbackOption.NONE) }
+                null -> {}
+            }
+            // Re-applied each tick so users who join during a fallback are covered too.
+            if (downlinkPolicy.active) applySubscribeFallback()
+        }
+        if (publishFallback != AppFallbackOption.NONE) {
+            when (uplinkPolicy.onSample(now, FallbackPolicy.isPoor(stats.quality, stats.uploadLoss), FallbackPolicy.isGood(stats.quality, stats.uploadLoss))) {
+                true -> launchSafely { applyPublishFallback(); debug("fallback publish -> $publishFallback"); eventHandler?.onFallbackStateChanged(true, publishFallback) }
+                false -> launchSafely { restorePublish(); debug("fallback publish restored"); eventHandler?.onFallbackStateChanged(true, AppFallbackOption.NONE) }
+                null -> {}
+            }
+        }
+    }
+
+    private fun applySubscribeFallback() {
+        users.values.forEach { u ->
+            if (u.uid in videoDisabled) return@forEach
+            u.raw.videoTrackPublications.forEach { (pub, _) ->
+                val rp = pub as? RemoteTrackPublication ?: return@forEach
+                when (subscribeFallback) {
+                    AppFallbackOption.AUDIO_ONLY -> if (rp.subscribed) { rp.setSubscribed(false); fallbackHidden.add(u.uid) }
+                    AppFallbackOption.VIDEO_LOW_QUALITY -> if (!rp.isAutoManaged) rp.setVideoQuality(VideoQuality.LOW)
+                    AppFallbackOption.NONE -> {}
+                }
+            }
+        }
+    }
+
+    private fun restoreSubscribe() {
+        users.values.forEach { u ->
+            if (u.uid in videoDisabled) return@forEach
+            u.raw.videoTrackPublications.forEach { (pub, _) ->
+                val rp = pub as? RemoteTrackPublication ?: return@forEach
+                if (u.uid in fallbackHidden && !rp.subscribed) rp.setSubscribed(true)
+                if (subscribeFallback == AppFallbackOption.VIDEO_LOW_QUALITY && !rp.isAutoManaged) rp.setVideoQuality(VideoQuality.HIGH)
+            }
+        }
+        fallbackHidden.clear()
+    }
+
+    private suspend fun applyPublishFallback() {
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return
+        when (publishFallback) {
+            AppFallbackOption.AUDIO_ONLY -> {
+                if (room.localParticipant.isCameraEnabled()) { room.localParticipant.setCameraEnabled(false); localFallbackMuted = true; notifyLocalVideoChanged() }
+            }
+            AppFallbackOption.VIDEO_LOW_QUALITY -> {
+                val v = resolveVideo(videoConfig)
+                val low = maxOf(300_000, v.maxBitrate * 3 / 10)
+                if (low < v.maxBitrate && applyEncoderParams(track, v.maxBitrate, low, v.degradation)) localFallbackBitrate = v.maxBitrate to low
+            }
+            AppFallbackOption.NONE -> {}
+        }
+    }
+
+    private suspend fun restorePublish() {
+        if (localFallbackMuted && isJoined) { localFallbackMuted = false; room.localParticipant.setCameraEnabled(true); notifyLocalVideoChanged() }
+        localFallbackMuted = false
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack
+        localFallbackBitrate?.let { (full, low) -> if (track != null) applyEncoderParams(track, low, full, resolveVideo(videoConfig).degradation) }
+        localFallbackBitrate = null
+    }
+
+    private fun resetFallbacks() {
+        downlinkPolicy.reset(); uplinkPolicy.reset()
+        fallbackHidden.clear(); localFallbackMuted = false; localFallbackBitrate = null
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Pre-call network test                                               */
+    /* ------------------------------------------------------------------ */
+
+    private var networkTestJob: Job? = null
+
+    /**
+     * Test the network before a call: opens a short, separate connection with
+     * [token] (mint it for a throwaway test channel, e.g. "nettest-<uid>";
+     * nothing is published), samples connection quality, round-trip time,
+     * jitter and loss for about 5 s, leaves, and calls [callback] once on the
+     * main thread. Gives up after 10 s with [AppNetworkTestResult.error] set.
+     * Does not touch the channel you are in. Loss and jitter are measured on
+     * the control traffic only, so they read 0 on a clean line; quality is
+     * the media server's estimate. Unreleased.
+     */
+    fun startNetworkTest(serverUrl: String, token: String, callback: (AppNetworkTestResult) -> Unit) {
+        networkTestJob?.cancel()
+        networkTestJob = scope.launch {
+            val probe = try {
+                LiveKit.create(appContext, options = RoomOptions(adaptiveStream = false), overrides = LiveKitOverrides(audioOptions = AudioOptions(audioHandler = io.livekit.android.audio.NoAudioHandler())))
+            } catch (t: Throwable) { callback(failedTest("could not start: ${t.message}")); return@launch }
+            var delivered = false
+            try {
+                val result = kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                    probe.connect(serverUrl, token, ConnectOptions(autoSubscribe = false))
+                    var rtt = -1; var jitter = -1
+                    var outSent = 0L; var outLost = 0L; var inRecv = 0L; var inLost = 0L
+                    val qualities = ArrayList<AppNetworkQuality>()
+                    repeat(5) {
+                        delay(1000)
+                        qualities += qualityOf(probe.localParticipant.connectionQuality)
+                        for (publisher in listOf(true, false)) {
+                            val report = kotlinx.coroutines.suspendCancellableCoroutine<livekit.org.webrtc.RTCStatsReport?> { cont ->
+                                try {
+                                    if (publisher) probe.getPublisherRTCStats { cont.resume(it) {} } else probe.getSubscriberRTCStats { cont.resume(it) {} }
+                                } catch (_: Throwable) { cont.resume(null) {} }
+                            }
+                            report?.statsMap?.values?.forEach { st ->
+                                val m = st.members
+                                when (st.type) {
+                                    "candidate-pair" -> if (m["state"] == "succeeded") (m["currentRoundTripTime"] as? Double)?.let { rtt = (it * 1000).toInt() }
+                                    "outbound-rtp" -> outSent = (m["packetsSent"] as? Number)?.toLong() ?: outSent
+                                    "remote-inbound-rtp" -> outLost = (m["packetsLost"] as? Number)?.toLong() ?: outLost
+                                    "inbound-rtp" -> {
+                                        inRecv = (m["packetsReceived"] as? Number)?.toLong() ?: inRecv
+                                        inLost = (m["packetsLost"] as? Number)?.toLong() ?: inLost
+                                        (m["jitter"] as? Double)?.let { jitter = (it * 1000).toInt() }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    val known = qualities.filter { it != AppNetworkQuality.UNKNOWN }
+                    // The worst reading of the window, so a spike is not hidden.
+                    val quality = known.maxByOrNull { it.ordinal } ?: AppNetworkQuality.UNKNOWN
+                    val upLoss = if (outSent + outLost > 0) outLost.toFloat() / (outSent + outLost) else 0f
+                    val downLoss = if (inRecv + inLost > 0) inLost.toFloat() / (inRecv + inLost) else 0f
+                    AppNetworkTestResult(
+                        uplinkQuality = if (upLoss > FallbackPolicy.POOR_LOSS && quality.ordinal < AppNetworkQuality.POOR.ordinal) AppNetworkQuality.POOR else quality,
+                        downlinkQuality = if (downLoss > FallbackPolicy.POOR_LOSS && quality.ordinal < AppNetworkQuality.POOR.ordinal) AppNetworkQuality.POOR else quality,
+                        rttMs = rtt, jitterMs = jitter, uplinkLoss = upLoss, downlinkLoss = downLoss,
+                    )
+                }
+                delivered = true
+                callback(result ?: failedTest("timed out"))
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                delivered = true
+                callback(failedTest(t.message ?: "network test failed"))
+            } finally {
+                try { probe.disconnect() } catch (_: Throwable) {}
+                try { probe.release() } catch (_: Throwable) {}
+                if (!delivered) debug("network test stopped")
+            }
+        }
+    }
+
+    /** Stop a running [startNetworkTest]; its callback is not called. Unreleased. */
+    fun stopNetworkTest() { networkTestJob?.cancel(); networkTestJob = null }
+
+    private fun failedTest(error: String) = AppNetworkTestResult(AppNetworkQuality.UNKNOWN, AppNetworkQuality.UNKNOWN, -1, -1, 0f, 0f, error)
+
     /** Release all resources. */
     fun destroy() {
+        stopNetworkTest()
         leaveChannel()
         SharedAudio.unlisten(this)
         AppLoomaVideoEncoderFactory.removeFailureListener(encoderFailureListener)
