@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.15 · uikit-android 0.2.8 — 2026-09-27
 
+- uikit-android 0.2.8: built on rtc-android 0.4.15, so the UIKit screens get automatic codec recovery and per-device video settings. No UIKit API changes.
 - Automatic codec recovery. While the camera is on, the SDK checks each stats tick that the encoder keeps producing frames and a key frame within 4 s of publishing; unhealthy for more than 5 s, or an encoder that fails to start or encode, and the camera is republished on software VP8 (software tier: 720p20 in STABLE_HD). A hardware encoder found bad is remembered per device, encoder and SDK version for 30 days, so the next session starts on the working path.
 - Viewer side: a subscribed, enabled remote camera that decodes no picture for more than 6 s while its sender has it on is reported to that publisher only, on a reserved internal data topic. Internal topics (prefix `_al.`) are never delivered to the app's message or data callbacks.
 - Publisher side: reports from 2 different viewers within 20 s (or from the only other person in a 1:1 call) republish the camera on a safer path: software VP8 when a hardware encoder was in use, otherwise once more as a single layer. At most once per join.

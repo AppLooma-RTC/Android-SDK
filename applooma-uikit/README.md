@@ -4,7 +4,7 @@ Drop-in Jetpack Compose screens: **live streaming**, **voice room**, **1-to-1 ca
 
 ```kotlin
 // settings.gradle.kts → repositories { google(); mavenCentral(); maven { url = uri("https://jitpack.io") } }
-implementation("com.applooma:uikit-android:0.2.7")
+implementation("com.applooma:uikit-android:0.2.8")
 ```
 
 ```kotlin
