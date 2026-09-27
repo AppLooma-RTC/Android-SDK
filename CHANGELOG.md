@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `setMicGain()` and `setAgcTargetLevel()` no longer silence the microphone. The engine hands the microphone stage floats in 16-bit range (±32768); the processor assumed ±1, so any gain other than unity squashed the voice to ±1 in the limiter. It now detects the scale and works in true dBFS, which also makes the noise gate levels correct. Covered by unit tests.
+
 ## rtc-android 0.4.12
 
 - Voice-room seats: a speaker put back on a seat can be heard again. A seat change arrives as two events (role and publish permission) in either order; the SDK reacted to the role alone, tried to publish before the permission existed, and never retried when the permission arrived. It now acts on the pair and publishes the microphone as soon as both allow it.

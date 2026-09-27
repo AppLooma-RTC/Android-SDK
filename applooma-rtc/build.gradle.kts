@@ -33,6 +33,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // api, not implementation: a Java consumer's compiler resolves every type
     // in AppRemoteUser's signatures, internal members included, and failed
     // with "cannot access VideoTrack" when the core was runtime-only.

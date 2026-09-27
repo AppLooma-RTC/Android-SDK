@@ -1211,6 +1211,8 @@ internal class MicProcessor(
 ) : AudioProcessorInterface {
     private var gateGain = 1f
     private var agcGain = 1f
+    /** True once a sample above ±2 proves the buffer is in 16-bit float range. */
+    @Volatile private var s16Scale = false
 
     override fun isEnabled(): Boolean = gainPercent != 100 || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
     override fun getName(): String = "applooma-mic"
@@ -1231,9 +1233,18 @@ internal class MicProcessor(
         val n = minOf(numBands * numFrames, fb.limit())
         if (n <= 0) return
 
+        // The engine hands this stage audio as floats in 16-bit range
+        // (±32768), not ±1. Treating it as ±1 made every gain other than
+        // unity (setMicGain, AGC target) squash the voice to ±1 in the limiter,
+        // i.e. silence (reported by a customer: host inaudible with
+        // setMicGain(200)). Detect the scale once from the signal and work in
+        // ±1 internally; the gate and AGC levels are then true dBFS.
+        var peak = 0f
         var sum = 0.0
-        for (i in 0 until n) { val v = fb.get(i); sum += (v * v).toDouble() }
-        val levelDb = (20.0 * kotlin.math.log10(kotlin.math.sqrt(sum / n) + 1e-9)).toFloat()
+        for (i in 0 until n) { val v = fb.get(i); val a = kotlin.math.abs(v); if (a > peak) peak = a; sum += (v * v).toDouble() }
+        if (!s16Scale && peak > 2f) s16Scale = true
+        val scale = if (s16Scale) S16 else 1f
+        val levelDb = (20.0 * kotlin.math.log10(kotlin.math.sqrt(sum / n) / scale + 1e-9)).toFloat()
         val speaking = levelDb >= gateThresholdDbfs
 
         // Gate: opens fast so the first syllable is not lost, closes slowly so
@@ -1250,7 +1261,7 @@ internal class MicProcessor(
         val g = gateGain * agcGain * (gainPercent / 100f)
         if (g == 1f) return
         for (i in 0 until n) {
-            var y = fb.get(i) * g
+            var y = fb.get(i) / scale * g
             // Soft knee above ±0.8, hard ceiling at ±1: loud peaks compress instead of clip.
             val a = kotlin.math.abs(y)
             if (a > KNEE) {
@@ -1258,12 +1269,13 @@ internal class MicProcessor(
                 val limited = KNEE + (1f - KNEE) * (1f - kotlin.math.exp(-over / (1f - KNEE)))
                 y = if (y < 0) -limited else limited
             }
-            fb.put(i, y)
+            fb.put(i, y * scale)
         }
     }
 
     private companion object {
         const val KNEE = 0.8f
+        const val S16 = 32768f
         /** -20 dB: noise is eased down, not muted, so the room never sounds "dead". */
         const val GATE_FLOOR = 0.1f
         const val AGC_MIN = 0.25f  // -12 dB
