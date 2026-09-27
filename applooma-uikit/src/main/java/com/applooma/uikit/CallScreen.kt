@@ -48,6 +48,8 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
     var bandwidthSince by remember { mutableStateOf<Long?>(null) }
     var mic by remember { mutableStateOf(true) }
     var cam by remember { mutableStateOf(true) }
+    var speaker by remember { mutableStateOf(video) }
+    var audioRoute by remember { mutableStateOf<AppAudioRoute?>(null) }
     var ended by remember { mutableStateOf(false) }
     var pip by remember { mutableStateOf(IntOffset.Zero) }
 
@@ -60,6 +62,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
         object : AppEventHandler() {
             override fun onUserJoined(user: AppRemoteUser) = meet(user)
             override fun onTrackSubscribed(user: AppRemoteUser) = meet(user)
+            override fun onAudioRouteChanged(route: AppAudioRoute?, available: List<AppAudioRoute>) { audioRoute = route }
             override fun onUserMediaChanged(user: AppRemoteUser, video: Boolean, audio: Boolean) { tick++ }
             override fun onUserLeft(user: AppRemoteUser) {
                 if (user.uid != peer?.uid) return
@@ -80,6 +83,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
 
     RequestPermissions(camera = video, onDenied = { status = "Permissions are needed for the call" }) {
         try {
+            engine.setSpeakerphone(speaker)
             val t = kit.tokenProvider(room, "host", kit.user)
             engine.joinChannel(t.token, t.wsUrl, AppJoinOptions(role = AppRole.HOST, camera = video, microphone = true))
             status = "Calling…"
@@ -147,6 +151,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
         ) {
             RoundBtn(if (mic) Icons.Rounded.Mic else Icons.Rounded.MicOff, { mic = !mic; engine.enableMicrophone(mic) }, off = !mic, label = "Mute")
             if (video) RoundBtn(if (cam) Icons.Rounded.Videocam else Icons.Rounded.VideocamOff, { cam = !cam; engine.enableCamera(cam) }, off = !cam, label = "Camera")
+            SpeakerBtn(speaker, audioRoute, { speaker = !speaker; engine.setSpeakerphone(speaker) }, label = "Speaker")
             RoundBtn(Icons.Rounded.CallEnd, onClose, size = 66.dp, danger = true, label = "End")
             if (video) RoundBtn(Icons.Rounded.Cameraswitch, { engine.switchCamera() }, label = "Flip")
         }

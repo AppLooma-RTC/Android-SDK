@@ -1,5 +1,9 @@
 # Changelog
 
+## uikit-android 0.2.7
+
+- uikit-android: loudspeaker button on the live stream (host and viewer), voice room and call screens. Speaker icon when on, speaker-off when on the earpiece; while a Bluetooth or wired headset carries the audio it shows headphones, does nothing and reads "Headset in use". Screen-reader labels "Loudspeaker on"/"Loudspeaker off". Starts on the loudspeaker for live, voice rooms and video calls, on the earpiece for voice calls.
+
 ## rtc-android 0.4.13 · uikit-android 0.2.6
 
 - `setSpeakerphone()` is remembered when called before the first join and applied as soon as audio starts; voice rooms in the CALL scenario came up on the earpiece. New `isSpeakerphoneOn`.

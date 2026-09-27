@@ -6,6 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Headset
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,6 +20,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +108,7 @@ internal fun Glass(modifier: Modifier = Modifier, padding: PaddingValues = Paddi
 internal fun RoundBtn(
     icon: ImageVector, onClick: () -> Unit, size: Dp = 50.dp, off: Boolean = false, danger: Boolean = false,
     brand: Boolean = false, tint: Color = Color.White, bg: Color = C.glass2, label: String? = null,
+    description: String? = null,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val base = Modifier.size(size)
@@ -112,10 +120,27 @@ internal fun RoundBtn(
             brand -> base.background(C.brand)
             else -> base.background(bg)
         }
-        Box(painted.clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(
+            painted.clickable(role = Role.Button, onClick = onClick)
+                .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier),
+            contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = if (off) Color(0xFF111111) else tint, modifier = Modifier.size(size * 0.44f))
         }
         if (label != null) Text(label, color = Color(0xFFCFCFE0), fontSize = 11.5.sp, modifier = Modifier.padding(top = 7.dp))
+    }
+}
+
+/**
+ * Loudspeaker on/off. While a Bluetooth or wired headset carries the audio the
+ * button shows headphones and does nothing — the headset keeps priority.
+ */
+@Composable
+internal fun SpeakerBtn(on: Boolean, route: com.applooma.rtc.AppAudioRoute?, onToggle: () -> Unit, label: String? = null) {
+    val headset = route == com.applooma.rtc.AppAudioRoute.BLUETOOTH || route == com.applooma.rtc.AppAudioRoute.WIRED_HEADSET
+    when {
+        headset -> RoundBtn(Icons.Rounded.Headset, {}, label = label, description = "Headset in use")
+        on -> RoundBtn(Icons.AutoMirrored.Rounded.VolumeUp, onToggle, label = label, description = "Loudspeaker on")
+        else -> RoundBtn(Icons.AutoMirrored.Rounded.VolumeOff, onToggle, off = true, label = label, description = "Loudspeaker off")
     }
 }
 

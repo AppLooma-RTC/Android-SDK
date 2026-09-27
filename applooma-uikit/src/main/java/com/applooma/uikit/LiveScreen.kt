@@ -52,6 +52,8 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
     var joining by remember { mutableStateOf(false) }
     var mic by remember { mutableStateOf(true) }
     var cam by remember { mutableStateOf(true) }
+    var speaker by remember { mutableStateOf(true) }
+    var audioRoute by remember { mutableStateOf<AppAudioRoute?>(null) }
     var say by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
@@ -70,6 +72,8 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
         override fun onAudienceChanged(audience: List<AppRemoteUser>) { tick++ }
         override fun onUserJoined(user: AppRemoteUser) { if (!user.isPublisher) add(ChatLine(user.name, "joined", system = true)); tick++ }
         override fun onUserLeft(user: AppRemoteUser) { tick++ }
+        override fun onAudioRouteChanged(route: AppAudioRoute?, available: List<AppAudioRoute>) { audioRoute = route }
+
         override fun onMessage(message: AppMessage) {
             val from = message.from?.name ?: "Someone"
             when {
@@ -86,6 +90,7 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
     if (wantJoin) {
         RequestPermissions(camera = isHost, onDenied = { joining = false; wantJoin = false; add(ChatLine("", "Camera and microphone permission is needed", system = true)) }) {
             try {
+                engine.setSpeakerphone(speaker)
                 val t = kit.tokenProvider(room, if (isHost) "host" else "audience", kit.user)
                 engine.joinChannel(t.token, t.wsUrl, AppJoinOptions(role = if (isHost) AppRole.HOST else AppRole.AUDIENCE, camera = isHost, microphone = isHost))
                 add(ChatLine("", "Welcome! Be kind in the chat 💬", system = true))
@@ -171,6 +176,7 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
                     SayField(say, { say = it }, "Say something…", Modifier.weight(1f)) {
                         val text = say.trim(); if (text.isNotEmpty()) { say = ""; add(ChatLine(kit.user.name, text)); engine.sendMessage(text = text) }
                     }
+                    SpeakerBtn(speaker, audioRoute, { speaker = !speaker; engine.setSpeakerphone(speaker) })
                     RoundBtn(Icons.Rounded.CardGiftcard, { val i = Random.nextInt(gifts.size); gift(kit.user.name, i); engine.sendMessage(data = mapOf("kind" to "gift", "i" to i)) },
                         tint = C.gold, bg = C.gold.copy(alpha = 0.2f))
                     RoundBtn(Icons.Rounded.Favorite, { heart(); engine.sendMessage(data = mapOf("kind" to "like"), reliable = false) }, brand = true)

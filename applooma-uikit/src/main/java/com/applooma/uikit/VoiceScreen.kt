@@ -47,6 +47,8 @@ fun AppLoomaVoiceRoom(kit: AppLoomaKit, room: String, seats: Int = 8, onLeave: (
     var speaking by remember { mutableStateOf(emptySet<String>()) }
     var mic by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf("connecting…") }
+    var speaker by remember { mutableStateOf(true) }
+    var audioRoute by remember { mutableStateOf<AppAudioRoute?>(null) }
     var say by remember { mutableStateOf("") }
     fun add(l: ChatLine) { chat.add(l); if (chat.size > 60) chat.removeAt(0) }
 
@@ -57,6 +59,7 @@ fun AppLoomaVoiceRoom(kit: AppLoomaKit, room: String, seats: Int = 8, onLeave: (
         override fun onUserJoined(user: AppRemoteUser) { names[user.uid] = user.name; add(ChatLine(user.name, "joined the room", system = true)); hello() }
         override fun onUserLeft(user: AppRemoteUser) { add(ChatLine(names[user.uid] ?: user.uid, "left", system = true)); joinedAt.remove(user.uid) }
         override fun onUserMediaChanged(user: AppRemoteUser, video: Boolean, audio: Boolean) { tick++ }
+        override fun onAudioRouteChanged(route: AppAudioRoute?, available: List<AppAudioRoute>) { audioRoute = route }
         override fun onActiveSpeakersChanged(uids: List<String>) { speaking = uids.toSet() }
         override fun onMessage(message: AppMessage) {
             val uid = message.from?.uid ?: return
@@ -73,6 +76,7 @@ fun AppLoomaVoiceRoom(kit: AppLoomaKit, room: String, seats: Int = 8, onLeave: (
 
     RequestPermissions(camera = false, onDenied = { status = "microphone permission needed" }) {
         try {
+            engine.setSpeakerphone(speaker)
             val t = kit.tokenProvider(room, "cohost", kit.user)
             engine.joinChannel(t.token, t.wsUrl, AppJoinOptions(role = AppRole.COHOST, microphone = true))
             engine.remoteUsers.forEach { names[it.uid] = it.name }
@@ -147,6 +151,7 @@ fun AppLoomaVoiceRoom(kit: AppLoomaKit, room: String, seats: Int = 8, onLeave: (
                     val t = say.trim(); if (t.isNotEmpty()) { say = ""; add(ChatLine(kit.user.name, t)); engine.sendMessage(text = t) }
                 }
                 RoundBtn(if (mic) Icons.Rounded.Mic else Icons.Rounded.MicOff, { mic = !mic; engine.enableMicrophone(mic) }, off = !mic)
+                SpeakerBtn(speaker, audioRoute, { speaker = !speaker; engine.setSpeakerphone(speaker) })
                 RoundBtn(Icons.Rounded.WavingHand, { add(ChatLine(kit.user.name, "waved 👋", system = true)); engine.sendMessage(data = mapOf("kind" to "wave")) })
             }
         }
