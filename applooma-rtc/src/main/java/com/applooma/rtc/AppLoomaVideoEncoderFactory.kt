@@ -210,6 +210,8 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
         private val H264_EXCEPTION_MODELS = listOf("SAMSUNG-SGH-I337", "Nexus 7", "Nexus 4")
 
         private fun isExynos(name: String) = name.startsWith("OMX.Exynos.", true) || name.startsWith("c2.exynos.", true)
+        private val H264_PROVEN_PREFIXES = arrayOf("OMX.qcom.", "OMX.Exynos.")
+
         private fun isMediaTek(name: String) = name.startsWith("OMX.MTK.", true) || name.startsWith("c2.mtk.", true)
 
         private fun supportsH264HighProfile(codec: MediaCodecInfo): Boolean {
@@ -234,7 +236,13 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
             // but no other phone can bind/decode the stream (verified 2026-09-27
             // on realme RMX3941 c2.mtk.avc.encoder -> vivo V2419 showed black).
             // Those phones stay on VP8 until a MediaTek-specific format fix exists.
-            if (mime.equals("video/avc", true) && isMediaTek(name)) return false
+            // H.264 only on the encoders the engine itself has always driven
+            // (OMX.qcom., OMX.Exynos.). Codec2 H.264 encoders run and the server
+            // receives packets, but no other phone can bind the stream: seen on
+            // MediaTek (c2.mtk, realme RMX3941) and on Qualcomm Codec2
+            // (realme RMX5555, 2026-09-27: every viewer "track not bound").
+            // Those phones publish VP8 instead, which every phone decodes.
+            if (mime.equals("video/avc", true) && !H264_PROVEN_PREFIXES.any { name.startsWith(it, true) }) return false
             return true
         }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.4.14
+
+- Black camera from newer Qualcomm phones fixed: H.264 is published only through the encoders the engine has always driven (`OMX.qcom.`, `OMX.Exynos.`). Codec2 H.264 encoders (`c2.qti`, `c2.mtk`) produced a stream no other phone could bind (realme RMX5555: every viewer black). Those phones publish VP8, which works everywhere.
+
 ## uikit-android 0.2.7
 
 - uikit-android: loudspeaker button on the live stream (host and viewer), voice room and call screens. Speaker icon when on, speaker-off when on the earpiece; while a Bluetooth or wired headset carries the audio it shows headphones, does nothing and reads "Headset in use". Screen-reader labels "Loudspeaker on"/"Loudspeaker off". Starts on the loudspeaker for live, voice rooms and video calls, on the earpiece for voice calls.
