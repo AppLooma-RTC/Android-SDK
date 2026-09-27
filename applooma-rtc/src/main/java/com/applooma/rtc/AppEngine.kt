@@ -270,13 +270,16 @@ class AppEngine private constructor(
         internal fun hasUsableH264Encoder(): Boolean = AppLoomaVideoEncoderFactory.findHardwareEncoder("video/avc") != null
 
         /** The codec actually published for a config on this phone, after AUTO is resolved. */
-        internal fun resolveCodec(c: AppVideoCodec): String = when (c) {
+        internal fun resolveCodec(c: AppVideoCodec): String = resolveCodecOnPhone(DeviceCaps.codec(c, DeviceTelemetry.current))
+
+        /** [resolveCodec] without the server's per-device codec choice. */
+        private fun resolveCodecOnPhone(c: AppVideoCodec): String = when (c) {
             AppVideoCodec.VP8 -> "vp8"
             // The engine has no H.265 publish path on Android yet (our factory
             // already exposes a hardware H.265 encoder for when it does).
-            AppVideoCodec.H265 -> resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "AppVideoCodec.H265 is not available on Android; publishing $it") }
+            AppVideoCodec.H265 -> resolveCodecOnPhone(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "AppVideoCodec.H265 is not available on Android; publishing $it") }
             // AV1 only where the chipset encodes it; software AV1 at camera sizes would starve the CPU.
-            AppVideoCodec.AV1 -> if (hasHardwareEncoder("video/av01")) "av1" else resolveCodec(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "No AV1 hardware encoder on this phone; publishing $it") }
+            AppVideoCodec.AV1 -> if (hasHardwareEncoder("video/av01") && !AppLoomaVideoEncoderFactory.isForcedSoftware("video/av01")) "av1" else resolveCodecOnPhone(AppVideoCodec.AUTO).also { android.util.Log.w(TAG, "No AV1 hardware encoder on this phone; publishing $it") }
             // An explicit H.264 request still cannot be honoured where no usable
             // encoder exists; VP8 (software if need be) beats a black stream.
             AppVideoCodec.H264 -> if (hasUsableH264Encoder()) "h264" else "vp8".also { android.util.Log.w(TAG, "No usable H.264 hardware encoder on this phone; publishing VP8") }
@@ -302,6 +305,8 @@ class AppEngine private constructor(
             AppVideoDegradation.AUTO -> null
         }
 
+        private const val VP8_MIME = "video/x-vnd.on2.vp8"
+
         private fun mimeOfCodec(codec: String): String = when (codec) {
             "h264" -> "video/avc"; "av1" -> "video/av01"; else -> "video/x-vnd.on2.vp8"
         }
@@ -312,9 +317,17 @@ class AppEngine private constructor(
          * 1080p30 steadily; a CPU encoder (VP8 on MediaTek, for one) does not,
          * so those phones get 720p30.
          */
-        private val hardwareTier: Boolean by lazy {
-            AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(resolveCodec(AppVideoCodec.AUTO))) != null
-        }
+        // Re-probed when automatic codec recovery forces a codec onto software,
+        // so the recovered stream gets the software tier (720p20 in STABLE_HD).
+        private var hardwareTierCache: Pair<String, Boolean>? = null
+        private val hardwareTier: Boolean
+            @Synchronized get() {
+                val key = AppLoomaVideoEncoderFactory.forcedSoftwareKey()
+                hardwareTierCache?.let { if (it.first == key) return it.second }
+                val v = AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(resolveCodec(AppVideoCodec.AUTO))) != null
+                hardwareTierCache = key to v
+                return v
+            }
 
         private val ultraHdGate: Boolean by lazy {
             try {
@@ -369,7 +382,9 @@ class AppEngine private constructor(
             // under CPU limit. A steady 20 fps looks far smoother. Only the
             // default fps is capped; an app that asks for another value keeps it.
             val fps = if (mode == AppVideoMode.STABLE_HD && !hardwareTier && c.height <= 0 && c.fps == 30) 20 else c.fps
-            return ResolvedVideo(mode, height, fps, maxBitrate, simulcast, degradation)
+            // Per-device caps from the server (DeviceTelemetry): only ever lower.
+            val capped = DeviceCaps.apply(DeviceCaps.Caps(height, fps, maxBitrate, simulcast), DeviceTelemetry.current)
+            return ResolvedVideo(mode, capped.height, capped.fps, capped.maxBitrate, capped.simulcast, degradation)
         }
 
         private fun presetOf(height: Int): VideoPreset169 = when (height) {
@@ -432,6 +447,8 @@ class AppEngine private constructor(
         @JvmOverloads
         fun create(context: Context, appId: String, eventHandler: AppEventHandler? = null, options: AppEngineOptions = AppEngineOptions()): AppEngine {
             require(appId.isNotBlank()) { "AppEngine.create: appId is required" }
+            CodecMemory.apply(context)
+            DeviceTelemetry.load(context)
             return AppEngine(context, appId, eventHandler, options)
         }
     }
@@ -449,10 +466,16 @@ class AppEngine private constructor(
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
         joinStartedAt = System.currentTimeMillis()
         firstFrameSeen.clear()
+        resetCodecRecovery()
+        joinToken = token
+        // Device tuning: this join uses the cached answer (already in the room
+        // options); a fresh one is fetched in the background and applies to
+        // the next publish. Never blocks the join.
+        DeviceTelemetry.refresh(appContext, token) { onMain { refreshPublishDefaults() } }
         subscribeEvents()
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
-        debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=0.4.7 device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
+        debug("joinChannel role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=${BuildConfig.SDK_VERSION} device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
         publishedCodec.let { debug("video codec=$it ${AppLoomaVideoEncoderFactory.describe(it)}") }
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
@@ -633,17 +656,7 @@ class AppEngine private constructor(
         val encoderOnly = now.maxBitrate != was.maxBitrate || now.degradation != was.degradation
         debug("setVideoConfig ${was.height}p${was.fps}/${was.maxBitrate / 1000}kbps -> ${now.height}p${now.fps}/${now.maxBitrate / 1000}kbps republish=$republish resize=$resize encoder=$encoderOnly")
         if (republish) {
-            // setCameraEnabled(false/true) only mutes and unmutes the same
-            // track, so the new codec/simulcast never took effect; unpublish
-            // for real and publish a new track with the new defaults. Only the
-            // publisher connection renegotiates; subscriptions are untouched.
-            val pub = lp.videoTrackPublications.firstOrNull { it.second === track }?.first
-            val wasOn = pub?.muted != true
-            lp.videoTrackCaptureDefaults = lp.videoTrackCaptureDefaults.copy(position = track.options.position ?: lp.videoTrackCaptureDefaults.position)
-            debug("republish camera: unpublish")
-            lp.unpublishTrack(track)
-            if (wasOn) lp.setCameraEnabled(true)
-            debug("republish camera: published=${localVideoTrack != null}")
+            republishCamera(track)
         } else {
             if (resize) track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
             if (encoderOnly && !applyEncoderParams(track, was.maxBitrate, now.maxBitrate, now.degradation)) {
@@ -651,6 +664,189 @@ class AppEngine private constructor(
             }
         }
         notifyLocalVideoChanged()
+    }
+
+    /**
+     * setCameraEnabled(false/true) only mutes and unmutes the same track, so a
+     * new codec/simulcast never took effect; unpublish for real and publish a
+     * new track with the current defaults. Only the publisher connection
+     * renegotiates; subscriptions are untouched.
+     */
+    private suspend fun republishCamera(track: io.livekit.android.room.track.LocalVideoTrack) {
+        val lp = room.localParticipant
+        val pub = lp.videoTrackPublications.firstOrNull { it.second === track }?.first
+        val wasOn = pub?.muted != true
+        lp.videoTrackCaptureDefaults = lp.videoTrackCaptureDefaults.copy(position = track.options.position ?: lp.videoTrackCaptureDefaults.position)
+        debug("republish camera: unpublish")
+        lp.unpublishTrack(track)
+        if (wasOn) lp.setCameraEnabled(true)
+        debug("republish camera: published=${localVideoTrack != null}")
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Automatic codec recovery                                            */
+    /* ------------------------------------------------------------------ */
+
+    private val encoderWatchdog = EncoderWatchdog()
+    private val viewerReports = ViewerReports()
+    private val fallbackGate = FallbackGate()
+    private var watchedRtc: Any? = null
+    private val noFrameSince = HashMap<String, Long>()
+    private val lastReportSent = HashMap<String, Long>()
+    private val remoteCodec = HashMap<String, String>()
+    @Volatile private var lastEncoderFailureAt = 0L
+    private val encoderFailureListener: (String, String) -> Unit = { codec, detail ->
+        val now = System.currentTimeMillis()
+        if (now - lastEncoderFailureAt > 5_000) {
+            lastEncoderFailureAt = now
+            onMain { onEncoderFailure(codec, detail) }
+        }
+    }
+
+    init { AppLoomaVideoEncoderFactory.addFailureListener(encoderFailureListener) }
+
+    private fun resetCodecRecovery() {
+        fallbackGate.reset(); viewerReports.clear(); encoderWatchdog.pause(); watchedRtc = null
+        noFrameSince.clear(); lastReportSent.clear(); remoteCodec.clear()
+        reportedOutcomes.clear(); healthySince = -1L
+    }
+
+    /* Anonymous device reports (DeviceTelemetry): at most one per outcome and codec per join. */
+    @Volatile private var joinToken: String? = null
+    private val reportedOutcomes = HashSet<String>()
+    private var healthySince = -1L
+
+    private fun reportDevice(outcome: String, codec: String, encoderName: String?, fromCodec: String? = null, toCodec: String? = null) {
+        if (!reportedOutcomes.add("$outcome:$codec")) return
+        DeviceTelemetry.report(joinToken, outcome, codec, encoderName, fromCodec, toCodec)
+    }
+
+    private fun encoderNameFor(codec: String): String? = AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(codec))?.name
+
+    /** Re-reads the publish defaults so a new device tuning applies to the next publish. */
+    private fun refreshPublishDefaults() {
+        try {
+            val ro = roomOptions(options.copy(video = videoConfig))
+            val lp = room.localParticipant
+            lp.videoTrackCaptureDefaults = ro.videoTrackCaptureDefaults ?: lp.videoTrackCaptureDefaults
+            lp.videoTrackPublishDefaults = ro.videoTrackPublishDefaults ?: lp.videoTrackPublishDefaults
+        } catch (_: Throwable) {}
+    }
+
+    /** The codec the camera publishes with right now ("h264", "vp8", "av1"). */
+    private val currentCodec: String get() = resolveCodec(videoConfig.codec)
+
+    private fun onEncoderFailure(codec: String, detail: String) {
+        if (localVideoTrack == null || !codec.equals(currentCodec, ignoreCase = true)) return
+        debug("video encoder failure codec=$codec $detail")
+        fallBack(CodecHealth.REASON_ENCODER_ERROR)
+    }
+
+    /** Each stats tick: is our camera encoder producing frames and key frames? */
+    private fun watchLocalEncoder(report: livekit.org.webrtc.RTCStatsReport?) {
+        val lp = room.localParticipant
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack
+        val pub = track?.let { t -> lp.videoTrackPublications.firstOrNull { it.second === t }?.first }
+        if (track == null || pub == null || pub.muted) { encoderWatchdog.pause(); watchedRtc = null; healthySince = -1L; return }
+        val now = System.currentTimeMillis()
+        val rtc = try { track.rtcTrack } catch (_: Throwable) { null }
+        if (rtc !== watchedRtc) { watchedRtc = rtc; encoderWatchdog.reset(now); healthySince = -1L }
+        val video = report?.statsMap?.values
+            ?.filter { it.type == "outbound-rtp" && (it.members["kind"] ?: it.members["mediaType"]) == "video" }
+            ?: return
+        if (video.isEmpty()) return
+        fun sum(key: String) = video.sumOf { (it.members[key] as? Number)?.toLong() ?: 0L }
+        val sample = EncoderSample(now, sum("framesEncoded"), sum("keyFramesEncoded"), sum("framesSent"))
+        val reason = encoderWatchdog.onSample(sample)
+        if (reason == null) {
+            // One "ok" per join once the camera has been encoding for 20 s.
+            if (sample.keyFramesEncoded > 0 && sample.framesEncoded > 0) {
+                if (healthySince < 0) healthySince = now
+                if (now - healthySince >= 20_000) currentCodec.let { reportDevice("ok", it, encoderNameFor(it)) }
+            }
+            return
+        }
+        healthySince = -1L
+        debug("video encoder unhealthy: frames=${sample.framesEncoded} keyFrames=${sample.keyFramesEncoded} sent=${sample.framesSent}")
+        fallBack(reason)
+    }
+
+    /**
+     * Move the camera to the safe encoding path: software VP8 when a hardware
+     * encoder was in use (remembered for this phone), otherwise one republish
+     * as a single layer. At most once per join.
+     */
+    private fun fallBack(reason: String) = launchSafely {
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
+        if (!fallbackGate.tryAcquire()) { debug("codec recovery already used in this session; $reason ignored"); return@launchSafely }
+        val codec = currentCodec
+        val mime = mimeOfCodec(codec)
+        val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime)
+        val from = "$codec:${if (hw != null) "hw" else "sw"}"
+        val to: String
+        if (hw != null) {
+            CodecMemory.rememberBad(appContext, mime, hw.name)
+            AppLoomaVideoEncoderFactory.forceSoftware(mime)
+            AppLoomaVideoEncoderFactory.forceSoftware(VP8_MIME)
+            to = "vp8:sw"
+        } else {
+            videoConfig = videoConfig.copy(simulcast = false)
+            to = "$from:single"
+        }
+        debug("codec recovery: $from -> $to reason=$reason")
+        reportDevice("fallback", codec, hw?.name, fromCodec = codec, toCodec = if (hw != null) "vp8" else codec)
+        val ro = roomOptions(options.copy(video = videoConfig))
+        val lp = room.localParticipant
+        lp.videoTrackCaptureDefaults = ro.videoTrackCaptureDefaults ?: lp.videoTrackCaptureDefaults
+        lp.videoTrackPublishDefaults = ro.videoTrackPublishDefaults ?: lp.videoTrackPublishDefaults
+        republishCamera(track)
+        notifyLocalVideoChanged()
+        eventHandler?.onVideoCodecFallback(from, to, reason)
+    }
+
+    /**
+     * Viewer side: a remote camera shown in a visible view, whose sender is
+     * publishing, decoded at 0 fps for more than 6 s. Tell that publisher (and
+     * only them) on the internal report topic; at most once per 20 s each.
+     */
+    private fun reportUndecodableVideo(remote: List<AppRemoteStats>) {
+        val now = System.currentTimeMillis()
+        val shown = remoteViews.filter { it.isShown }.mapNotNull { it.boundUid }.toSet()
+        for (u in users.values) {
+            val uid = u.uid
+            val pub = u.raw.videoTrackPublications.firstOrNull()?.first as? RemoteTrackPublication
+            val live = pub != null && pub.subscribed && !pub.muted && uid in shown && uid !in videoDisabled
+            val fps = remote.firstOrNull { it.uid == uid }?.videoFps ?: 0
+            if (!live || fps > 0) { noFrameSince.remove(uid); continue }
+            val since = noFrameSince.getOrPut(uid) { now }
+            if (now - since <= 6_000) continue
+            if (now - (lastReportSent[uid] ?: 0L) < 20_000) continue
+            lastReportSent[uid] = now
+            val payload = JSONObject().apply { put("v", 1); put("t", CodecHealth.REASON_NO_FRAMES); put("codec", remoteCodec[uid] ?: "") }
+            debug("video from uid=$uid has no picture for ${(now - since) / 1000}s; reporting to the sender")
+            launchSafely {
+                room.localParticipant.publishData(
+                    payload.toString().toByteArray(Charsets.UTF_8),
+                    io.livekit.android.room.track.DataPublishReliability.RELIABLE,
+                    CodecHealth.REPORT_TOPIC,
+                    listOf(io.livekit.android.room.participant.Participant.Identity(uid)),
+                )
+            }
+        }
+    }
+
+    /** An SDK-internal data message; never reaches the app. */
+    private fun onInternalData(topic: String?, data: ByteArray, from: RemoteParticipant?) {
+        if (topic != CodecHealth.REPORT_TOPIC || from == null) return
+        val msg = try { JSONObject(String(data, Charsets.UTF_8)) } catch (_: Exception) { return }
+        if (msg.optString("t") != CodecHealth.REASON_NO_FRAMES) return
+        if (localVideoTrack == null) return
+        val viewer = from.identity?.value ?: return
+        debug("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")})")
+        currentCodec.let { reportDevice(CodecHealth.REASON_VIEWERS, it, encoderNameFor(it)) }
+        if (viewerReports.onReport(System.currentTimeMillis(), viewer, room.remoteParticipants.size)) {
+            fallBack(CodecHealth.REASON_VIEWERS)
+        }
     }
 
     /** Bitrate / degradation straight on the sender: no republish, no renegotiation. */
@@ -1131,6 +1327,8 @@ class AppEngine private constructor(
                     val remote = users.values.mapNotNull { u -> remoteStatsFor(u) }
                     if (remote.isNotEmpty()) eventHandler?.onRemoteStats(remote)
                     watchStalls(remote)
+                    reportUndecodableVideo(remote)
+                    watchLocalEncoder(reports[0])
                 } catch (_: Throwable) { /* stats are best effort */ }
             }
         }
@@ -1193,8 +1391,10 @@ class AppEngine private constructor(
         val audio = u.raw.audioTrackPublications.firstNotNullOfOrNull { it.second }
         if (video == null && audio == null) return null
         var fps = 0; var w = 0; var h = 0; var freezes = 0; var vLost = 0L; var aLost = 0L; var jitterMs = 0
-        trackStats(video)?.statsMap?.values?.filter { it.type == "inbound-rtp" }?.forEach { s ->
+        val videoReport = trackStats(video)
+        videoReport?.statsMap?.values?.filter { it.type == "inbound-rtp" }?.forEach { s ->
             val m = s.members
+            (m["codecId"] as? String)?.let { id -> (videoReport.statsMap[id]?.members?.get("mimeType") as? String)?.let { remoteCodec[u.uid] = it } }
             fps = (m["framesPerSecond"] as? Number)?.toInt() ?: fps
             w = (m["frameWidth"] as? Number)?.toInt() ?: w
             h = (m["frameHeight"] as? Number)?.toInt() ?: h
@@ -1298,7 +1498,10 @@ class AppEngine private constructor(
                         users.clear()
                         eventHandler?.onDisconnected(event.reason?.name)
                     }
-                    is RoomEvent.DataReceived -> {
+                    is RoomEvent.DataReceived -> if (CodecHealth.isInternalTopic(event.topic)) {
+                        // SDK-internal traffic (codec recovery reports) never reaches the app.
+                        onInternalData(event.topic, event.data, event.participant)
+                    } else {
                         val from = (event.participant as? RemoteParticipant)?.let { userFor(it) }
                         // Each frame is either ours or the customer's, never both.
                         val frame = try { JSONObject(String(event.data, Charsets.UTF_8)) } catch (_: Exception) { null }
@@ -1356,6 +1559,7 @@ class AppEngine private constructor(
     fun destroy() {
         leaveChannel()
         SharedAudio.unlisten(this)
+        AppLoomaVideoEncoderFactory.removeFailureListener(encoderFailureListener)
         scope.launch { room.release() }
     }
 }

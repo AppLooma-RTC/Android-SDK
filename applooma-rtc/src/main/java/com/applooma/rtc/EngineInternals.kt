@@ -154,3 +154,46 @@ internal object SharedAudio {
         ) + tail
     }
 }
+
+/**
+ * Remembers, per phone, hardware encoders that automatic codec recovery found
+ * unable to produce a picture viewers can see, so the next session starts on
+ * the working path. One entry per MIME type, keyed to the device, the encoder
+ * name and the SDK version; an entry expires after 30 days or with a new SDK.
+ */
+internal object CodecMemory {
+    private const val PREFS = "applooma.codec"
+    private val MIMES = arrayOf("video/avc", "video/x-vnd.on2.vp8", "video/x-vnd.on2.vp9", "video/av01", "video/hevc")
+    @Volatile private var applied = false
+
+    private fun device() = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} api=${android.os.Build.VERSION.SDK_INT}"
+
+    /** Apply remembered verdicts to the encoder factory. Once per process; cheap after that. */
+    fun apply(context: Context) {
+        if (applied) return
+        applied = true
+        try {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val edit = prefs.edit()
+            for (mime in MIMES) {
+                val key = "bad:$mime"
+                val v = CodecVerdict.decode(prefs.getString(key, null)) ?: continue
+                val encoder = AppLoomaVideoEncoderFactory.findPlatformHardwareEncoder(mime)?.name
+                if (encoder != null && v.isValid(now, device(), encoder, BuildConfig.SDK_VERSION)) {
+                    AppLoomaVideoEncoderFactory.forceSoftware(mime)
+                    AppEngine.debug("codec recovery: $encoder remembered as unusable on this phone; $mime uses software")
+                } else edit.remove(key)
+            }
+            edit.apply()
+        } catch (_: Throwable) {}
+    }
+
+    fun rememberBad(context: Context, mime: String, encoder: String) {
+        try {
+            context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString("bad:$mime", CodecVerdict(device(), encoder, BuildConfig.SDK_VERSION, System.currentTimeMillis()).encode())
+                .apply()
+        } catch (_: Throwable) {}
+    }
+}

@@ -479,6 +479,23 @@ abstract class AppEventHandler {
      * selected yet; `available` is what [AppEngine.getAudioRoutes] returns now.
      */
     open fun onAudioRouteChanged(route: AppAudioRoute?, available: List<AppAudioRoute>) {}
+    /**
+     * Automatic codec recovery switched how your camera is encoded, because
+     * the encoder in use was not producing a picture viewers could see. The
+     * camera was republished on the safer path by itself (viewers see about
+     * half a second of interruption); there is nothing to do, this is for
+     * logs and support. At most once per join.
+     *
+     * `from` / `to` name the codec and encoder kind, e.g. `"h264:hw"` →
+     * `"vp8:sw"`; a stream already on the safest codec is republished as a
+     * single layer (`"vp8:sw"` → `"vp8:sw:single"`).
+     * `reason` is `"no_frames"` (the encoder produced no frames or no key
+     * frame), `"encoder_error"` (the encoder failed to start or to encode) or
+     * `"viewers_cannot_decode"` (viewers reported they receive no picture).
+     * A hardware encoder found bad is remembered on this phone for 30 days,
+     * so later sessions start on the working path.
+     */
+    open fun onVideoCodecFallback(from: String, to: String, reason: String) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */

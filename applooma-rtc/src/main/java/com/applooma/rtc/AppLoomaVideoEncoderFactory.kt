@@ -137,7 +137,7 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
     // ── Per-layer thread ────────────────────────────────────────────────────
 
     private class PerLayerThread(private val inner: VideoEncoderFactory) : VideoEncoderFactory {
-        override fun createEncoder(info: VideoCodecInfo): VideoEncoder? = inner.createEncoder(info)?.let { LayerEncoder(it) }
+        override fun createEncoder(info: VideoCodecInfo): VideoEncoder? = inner.createEncoder(info)?.let { LayerEncoder(it, info.name) }
         override fun getSupportedCodecs(): Array<VideoCodecInfo> = inner.supportedCodecs
     }
 
@@ -148,7 +148,7 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
      * (the encoder detaches its thread check on release, so a later re-init on
      * a fresh thread is fine).
      */
-    private class LayerEncoder(private val encoder: VideoEncoder) : VideoEncoder {
+    private class LayerEncoder(private val encoder: VideoEncoder, private val codecName: String) : VideoEncoder {
         private val executor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, LinkedBlockingQueue()).apply {
             allowCoreThreadTimeOut(true)
             setThreadFactory { r -> Thread(r, "applooma-encoder").apply { isDaemon = true } }
@@ -159,20 +159,29 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
 
         override fun initEncode(s: VideoEncoder.Settings, callback: VideoEncoder.Callback): VideoCodecStatus = on {
             settings = s
-            encoder.initEncode(s, callback)
+            val status = try { encoder.initEncode(s, callback) } catch (t: Throwable) { reportFailure(codecName, "init threw $t"); throw t }
+            if (status != VideoCodecStatus.OK && status != VideoCodecStatus.FALLBACK_SOFTWARE) reportFailure(codecName, "init status=$status")
+            status
         }
 
         override fun release(): VideoCodecStatus = on { encoder.release() }
 
         override fun encode(frame: VideoFrame, info: VideoEncoder.EncodeInfo): VideoCodecStatus = on {
+            val status = try { encodeInner(frame, info) } catch (t: Throwable) { reportFailure(codecName, "encode threw $t"); throw t }
+            if (status == VideoCodecStatus.ERROR) reportFailure(codecName, "encode status=$status")
+            status
+        }
+
+        private fun encodeInner(frame: VideoFrame, info: VideoEncoder.EncodeInfo): VideoCodecStatus {
             val s = settings
             // The simulcast adapter scales per layer itself; this only catches a
             // frame that slipped through at the wrong size.
             if (s != null && s.width > 0 && s.height > 0 && (frame.buffer.width != s.width || frame.buffer.height != s.height)) {
                 val scaled = frame.buffer.cropAndScale(0, 0, frame.buffer.width, frame.buffer.height, s.width, s.height)
                 val scaledFrame = VideoFrame(scaled, frame.rotation, frame.timestampNs)
-                try { encoder.encode(scaledFrame, info) } finally { scaled.release() }
-            } else encoder.encode(frame, info)
+                return try { encoder.encode(scaledFrame, info) } finally { scaled.release() }
+            }
+            return encoder.encode(frame, info)
         }
 
         override fun setRateAllocation(allocation: VideoEncoder.BitrateAllocation, framerate: Int): VideoCodecStatus = on { encoder.setRateAllocation(allocation, framerate) }
@@ -188,6 +197,28 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
 
     companion object {
         private const val PERIODIC_KEY_FRAME_INTERVAL_S = 3600
+
+        /** MIME types whose hardware encoder is skipped for the rest of the process. */
+        private val softwareOnly = java.util.concurrent.CopyOnWriteArraySet<String>()
+
+        /**
+         * Process-wide switch: never use a hardware encoder for [mime] again in
+         * this process (automatic codec recovery sets it when a hardware encoder
+         * proved unable to produce a usable stream). Takes effect for the next
+         * encoder the factory creates, i.e. the next publish.
+         */
+        internal fun forceSoftware(mime: String) { softwareOnly += mime.lowercase() }
+        internal fun isForcedSoftware(mime: String): Boolean = mime.lowercase() in softwareOnly
+        /** Changes whenever [forceSoftware] adds a MIME type (for caches keyed on it). */
+        internal fun forcedSoftwareKey(): String = softwareOnly.sorted().joinToString(",")
+
+        /** Told when a layer encoder fails to start or to encode: (codec name, detail). */
+        private val failureListeners = java.util.concurrent.CopyOnWriteArraySet<(String, String) -> Unit>()
+        internal fun addFailureListener(l: (String, String) -> Unit) { failureListeners += l }
+        internal fun removeFailureListener(l: (String, String) -> Unit) { failureListeners -= l }
+        private fun reportFailure(codec: String, detail: String) {
+            failureListeners.forEach { try { it(codec, detail) } catch (_: Throwable) {} }
+        }
 
         /**
          * Vendor prefixes accepted on every Android version (case-insensitive).
@@ -247,7 +278,10 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
         }
 
         /** The hardware encoder this factory would use for [mime], or null when it would be software (or nothing). */
-        internal fun findHardwareEncoder(mime: String): MediaCodecInfo? = try {
+        internal fun findHardwareEncoder(mime: String): MediaCodecInfo? = if (isForcedSoftware(mime)) null else findPlatformHardwareEncoder(mime)
+
+        /** Like [findHardwareEncoder] but ignoring [forceSoftware]: the encoder the phone would offer. */
+        internal fun findPlatformHardwareEncoder(mime: String): MediaCodecInfo? = try {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.firstOrNull { isUsableHardwareEncoder(it, mime) }
         } catch (_: Throwable) { null }
 

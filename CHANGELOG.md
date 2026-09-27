@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Automatic codec recovery. While the camera is on, the SDK checks each stats tick that the encoder keeps producing frames and a key frame within 4 s of publishing; unhealthy for more than 5 s, or an encoder that fails to start or encode, and the camera is republished on software VP8 (software tier: 720p20 in STABLE_HD). A hardware encoder found bad is remembered per device, encoder and SDK version for 30 days, so the next session starts on the working path.
+- Viewer side: a subscribed, enabled remote camera that decodes no picture for more than 6 s while its sender has it on is reported to that publisher only, on a reserved internal data topic. Internal topics (prefix `_al.`) are never delivered to the app's message or data callbacks.
+- Publisher side: reports from 2 different viewers within 20 s (or from the only other person in a 1:1 call) republish the camera on a safer path: software VP8 when a hardware encoder was in use, otherwise once more as a single layer. At most once per join.
+- New `AppEventHandler.onVideoCodecFallback(from, to, reason)`: `from`/`to` like `"h264:hw"` → `"vp8:sw"`; `reason` is `no_frames`, `encoder_error` or `viewers_cannot_decode`. Each step is in the debug log. Decision rules covered by unit tests.
+- Per-device tuning: at join the SDK fetches video settings for this phone model in the background (never delaying the join, 3 s timeout), caches them with their ETag and lifetime, and applies them from the next camera publish: hardware encoders to avoid, codec choice, resolution, frame rate and bitrate caps, single layer. Anonymous device reports (make, model, OS and SDK version, encoder, codec and outcome; no user, identity or IP address) are sent in small batches: one `ok` after 20 s of healthy publishing, and one per fallback or viewer report. All of it fails silently.
+
 ## rtc-android 0.4.14
 
 - Black camera from newer Qualcomm phones fixed: H.264 is published only through the encoders the engine has always driven (`OMX.qcom.`, `OMX.Exynos.`). Codec2 H.264 encoders (`c2.qti`, `c2.mtk`) produced a stream no other phone could bind (realme RMX5555: every viewer black). Those phones publish VP8, which works everywhere.
