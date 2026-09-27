@@ -97,4 +97,13 @@ class NetworkPolicyTest {
         assertNull(TokenExpiry.expiresAtMs("a.!!!.c"))
         assertNull(TokenExpiry.expiresAtMs(null))
     }
+
+    /* Cloud proxy retry */
+
+    @Test fun autoRetriesOnTimeout() = assertTrue(ProxyPolicy.shouldRetry(AppCloudProxy.AUTO, java.util.concurrent.TimeoutException("could not establish pc connection")))
+    @Test fun autoRetriesOnSocketTimeout() = assertTrue(ProxyPolicy.shouldRetry(AppCloudProxy.AUTO, java.net.SocketTimeoutException("timeout")))
+    @Test fun noRetryOnRefusedToken() = assertFalse(ProxyPolicy.shouldRetry(AppCloudProxy.AUTO, RuntimeException("connection failed: 401 unauthorized")))
+    @Test fun noRetryWhenOff() = assertFalse(ProxyPolicy.shouldRetry(AppCloudProxy.OFF, java.util.concurrent.TimeoutException("timeout")))
+    @Test fun noRetryWhenForced() = assertFalse(ProxyPolicy.shouldRetry(AppCloudProxy.FORCE_TLS_443, java.util.concurrent.TimeoutException("timeout")))
+    @Test fun noRetryOnUnrelatedError() = assertFalse(ProxyPolicy.isRetryable("IllegalStateException Already in a channel"))
 }

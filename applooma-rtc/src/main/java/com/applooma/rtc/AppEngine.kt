@@ -511,7 +511,7 @@ class AppEngine private constructor(
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
         }
         try {
-            room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
+            connectWithProxy(wsUrl, token)
         } catch (t: Throwable) {
             debug("join failed: ${t.javaClass.simpleName}: ${t.message}")
             Diagnostics.problem(DiagPolicy.PROBLEM_JOIN)
@@ -538,6 +538,50 @@ class AppEngine private constructor(
         }
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Cloud proxy                                                         */
+    /* ------------------------------------------------------------------ */
+
+    /** Current cloud proxy state, see [AppEngineOptions.cloudProxy]. Unreleased. */
+    var proxyState: AppProxyState = AppProxyState.DIRECT
+        private set
+
+    private fun setProxyState(state: AppProxyState, autoRetry: Boolean) {
+        if (state == proxyState) return
+        proxyState = state
+        debug("cloud proxy $state${if (autoRetry) " (auto retry)" else ""}")
+        eventHandler?.onProxyStateChanged(state, autoRetry)
+    }
+
+    /** Relay-only transport: media goes through the TURN relay the server hands out (TLS on 443). */
+    private fun relayConnectOptions() = ConnectOptions(
+        autoSubscribe = true,
+        rtcConfig = livekit.org.webrtc.PeerConnection.RTCConfiguration(emptyList()).apply {
+            iceTransportsType = livekit.org.webrtc.PeerConnection.IceTransportsType.RELAY
+        },
+    )
+
+    private suspend fun connectWithProxy(wsUrl: String, token: String) {
+        val mode = options.cloudProxy
+        if (mode == AppCloudProxy.FORCE_TLS_443) {
+            setProxyState(AppProxyState.CONNECTING, false)
+            try { room.connect(wsUrl, token, relayConnectOptions()) } catch (t: Throwable) { setProxyState(AppProxyState.DIRECT, false); throw t }
+            setProxyState(AppProxyState.CONNECTED, false)
+            return
+        }
+        try {
+            room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException || !ProxyPolicy.shouldRetry(mode, t)) throw t
+            debug("direct join failed (${t.javaClass.simpleName}: ${t.message}); retrying once through the cloud proxy on TLS 443")
+            android.util.Log.w(TAG, "Direct connection failed; retrying through the AppLooma cloud proxy (TLS 443)")
+            try { room.disconnect() } catch (_: Throwable) {}
+            setProxyState(AppProxyState.CONNECTING, true)
+            try { room.connect(wsUrl, token, relayConnectOptions()) } catch (t2: Throwable) { setProxyState(AppProxyState.DIRECT, true); throw t2 }
+            setProxyState(AppProxyState.CONNECTED, true)
+        }
+    }
+
     /** Java-friendly fire-and-forget variant. Success arrives as [AppEventHandler.onJoined]. */
     fun joinChannelAsync(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         scope.launch {
@@ -555,6 +599,7 @@ class AppEngine private constructor(
         room.disconnect()
         isJoined = false
         users.clear()
+        setProxyState(AppProxyState.DIRECT, false)
         pendingData.clear()
         eventsJob?.cancel()
     }

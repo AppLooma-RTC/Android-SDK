@@ -250,7 +250,26 @@ data class AppEngineOptions @JvmOverloads constructor(
      * off. Unreleased.
      */
     val remoteDiagnostics: Boolean = true,
+    /**
+     * Cloud proxy for restrictive networks (office firewalls, UDP blocked).
+     * AUTO (default) connects directly and, when the first join fails with a
+     * connection or network timeout, retries once through AppLooma's relay on
+     * TLS port 443. FORCE_TLS_443 always relays on TLS 443. OFF never
+     * relays. Reported by [AppEventHandler.onProxyStateChanged]. Unreleased.
+     */
+    val cloudProxy: AppCloudProxy = AppCloudProxy.AUTO,
 )
+
+/** See [AppEngineOptions.cloudProxy]. Unreleased. */
+enum class AppCloudProxy { AUTO, FORCE_TLS_443, OFF }
+
+/**
+ * Whether media runs through the cloud proxy. DIRECT: not relayed (default,
+ * also after leaving); CONNECTING: joining through the relay on TLS 443
+ * (forced, or the AUTO retry after a failed direct join); CONNECTED: in the
+ * channel through the relay. Unreleased.
+ */
+enum class AppProxyState { DIRECT, CONNECTING, CONNECTED }
 
 /** Region hint, see [AppEngineOptions.region]. Unreleased. */
 enum class AppRegion(val code: String) { AUTO("auto"), BD("bd"), IN("in"), SA("sa"), SG("sg"), US("us") }
@@ -571,6 +590,12 @@ abstract class AppEventHandler {
      * Unreleased.
      */
     open fun onTokenWillExpire(token: String) {}
+    /**
+     * The cloud proxy state changed (see [AppEngineOptions.cloudProxy]).
+     * [autoRetry] is true when the relay is used because the direct join
+     * failed. Unreleased.
+     */
+    open fun onProxyStateChanged(state: AppProxyState, autoRetry: Boolean) {}
 }
 
 /** A virtual gift broadcast to the room (sent via your server's POST /v1/gifts/send). */

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Cloud proxy for restrictive networks: `AppEngineOptions.cloudProxy` (`AppCloudProxy.AUTO` default, `FORCE_TLS_443`, `OFF`). FORCE_TLS_443 joins with relay-only transport through AppLooma's relay on TLS 443; AUTO retries a join once that way when the direct join fails with a connection or network timeout, and logs it. New `AppEventHandler.onProxyStateChanged(state, autoRetry)`, `AppProxyState` (`DIRECT`, `CONNECTING`, `CONNECTED`) and `AppEngine.proxyState`. Retry rule covered by unit tests.
+
 ## rtc-android 0.4.16 · uikit-android 0.2.9 — 2026-09-27
 
 - Remote diagnostics: the SDK keeps its last 1500 log lines in memory (always, even with debug logging off; no audio, video or messages) and uploads them, scrubbed of names, metadata, user ids, tokens and URL parameters, when a call had a problem (codec fallback, a viewer reporting no picture, encoder self-test failure, join failure, 3 or more reconnects, an encoder error), when support turned collection on for the device or project, or on the new `AppEngine.uploadDiagnostics(reason)`. Sent at leave or disconnect (and once 60 s into the call), gzip, on a background thread; offline, one pending upload is kept on disk for the next join. Opt out with `AppEngineOptions.remoteDiagnostics = false`. Kept 14 days. Ring buffer, scrubber and trigger rules covered by unit tests.
