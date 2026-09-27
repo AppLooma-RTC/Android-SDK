@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.17 · uikit-android 0.2.10 — 2026-09-28
+
+- uikit-android 0.2.10: built on rtc-android 0.4.17 (cloud proxy over TLS 443 with automatic retry). No UIKit API changes.
 
 - Cloud proxy for restrictive networks: `AppEngineOptions.cloudProxy` (`AppCloudProxy.AUTO` default, `FORCE_TLS_443`, `OFF`). FORCE_TLS_443 joins with relay-only transport through AppLooma's relay on TLS 443; AUTO retries a join once that way when the direct join fails with a connection or network timeout, and logs it. New `AppEventHandler.onProxyStateChanged(state, autoRetry)`, `AppProxyState` (`DIRECT`, `CONNECTING`, `CONNECTED`) and `AppEngine.proxyState`. Retry rule covered by unit tests.
 
