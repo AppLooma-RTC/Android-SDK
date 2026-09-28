@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.CountDownLatch
@@ -23,6 +24,8 @@ internal object EncoderSelfTest {
     private const val HEIGHT = 720
     private const val FRAMES = 30
     private const val FPS = 30
+    /** Encoded bytes kept for the bitstream check on the Codec2 path. */
+    private const val MAX_INSPECT_BYTES = 2 * 1024 * 1024
 
     private val running = AtomicBoolean(false)
 
@@ -30,8 +33,9 @@ internal object EncoderSelfTest {
     fun runOnceIfDue(context: Context, enabled: Boolean) {
         val app = context.applicationContext
         val prefs = try { app.getSharedPreferences(PREFS, Context.MODE_PRIVATE) } catch (_: Throwable) { return }
-        if (!SelfTestDecision.shouldRun(enabled, prefs.getString("version", null), BuildConfig.SDK_VERSION)) return
-        run(app, null) { prefs.edit().putString("version", BuildConfig.SDK_VERSION).apply() }
+        val key = SelfTestDecision.versionKey(BuildConfig.SDK_VERSION, AppLoomaVideoEncoderFactory.h264Codec2Enabled())
+        if (!SelfTestDecision.shouldRun(enabled, prefs.getString("version", null), key)) return
+        run(app, null) { prefs.edit().putString("version", key).apply() }
     }
 
     /** Runs now on a background thread; [callback] is delivered on the main thread. */
@@ -65,9 +69,11 @@ internal object EncoderSelfTest {
         // The encode runs on its own thread so a codec that hangs inside a
         // platform call cannot hold this one past the total timeout.
         var observation: SelfTestDecision.Observation? = null
+        // On the Codec2 path, test the call's settings and check the bitstream itself.
+        val codec2 = AppLoomaVideoEncoderFactory.isCodec2H264(info.name)
         val done = CountDownLatch(1)
         val worker = Thread({
-            try { observation = encode(info) } catch (_: Throwable) {} finally { done.countDown() }
+            try { observation = encode(info, codec2) } catch (_: Throwable) {} finally { done.countDown() }
         }, "applooma-selftest-codec").apply { isDaemon = true }
         worker.start()
         val finished = try { done.await(SelfTestDecision.TOTAL_TIMEOUT_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { false }
@@ -75,7 +81,8 @@ internal object EncoderSelfTest {
         else SelfTestDecision.Observation(error = false, timedOut = true, sawConfigOrKeyFrame = false, outputBytes = 0)
         val reason = SelfTestDecision.verdict(o)
         val elapsed = System.currentTimeMillis() - started
-        AppEngine.debug("encoder self-test encoder=${info.name} result=${reason ?: "ok"} bytes=${o.outputBytes} elapsed=${elapsed}ms")
+        AppEngine.debug("encoder self-test encoder=${info.name} result=${reason ?: "ok"} bytes=${o.outputBytes} elapsed=${elapsed}ms" +
+            if (o.bitstreamChecked) " codec2=true profile=${o.profileLevelId ?: "none"}" else "")
         if (reason != null) {
             CodecMemory.rememberBad(app, MIME, info.name)
             AppLoomaVideoEncoderFactory.forceSoftware(MIME)
@@ -95,7 +102,8 @@ internal object EncoderSelfTest {
         return preferred.firstOrNull { f -> caps.colorFormats.contains(f) }
     }
 
-    private fun encode(info: MediaCodecInfo): SelfTestDecision.Observation {
+    private fun encode(info: MediaCodecInfo, codec2: Boolean): SelfTestDecision.Observation {
+        val stream = if (codec2) java.io.ByteArrayOutputStream() else null
         var codec: MediaCodec? = null
         var sawConfig = false
         var bytes = 0L
@@ -108,6 +116,18 @@ internal object EncoderSelfTest {
                 setInteger(MediaFormat.KEY_BIT_RATE, 1_800_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                if (codec2) {
+                    // The keys the call sets on this path (AppLoomaHardwareVideoEncoder).
+                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                    setInteger(MediaFormat.KEY_PROFILE,
+                        if (Build.VERSION.SDK_INT >= 27) MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
+                        else MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+                    setInteger("max-bframes", 0)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                    if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+                }
             }
             codec = MediaCodec.createByCodecName(info.name)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -148,6 +168,12 @@ internal object EncoderSelfTest {
                             bytes += bufferInfo.size
                             val flags = bufferInfo.flags
                             if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0 || flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) sawConfig = true
+                            if (stream != null && stream.size() < MAX_INSPECT_BYTES) {
+                                codec.getOutputBuffer(outIndex)?.let { b ->
+                                    b.position(bufferInfo.offset); b.limit(bufferInfo.offset + bufferInfo.size)
+                                    val chunk = ByteArray(bufferInfo.size); b.get(chunk); stream.write(chunk)
+                                }
+                            }
                         }
                         codec.releaseOutputBuffer(outIndex, false)
                     }
@@ -159,6 +185,13 @@ internal object EncoderSelfTest {
             try { codec?.stop() } catch (_: Throwable) {}
             try { codec?.release() } catch (_: Throwable) {}
         }
-        return SelfTestDecision.Observation(error, timedOut, sawConfig, bytes)
+        if (stream == null) return SelfTestDecision.Observation(error, timedOut, sawConfig, bytes)
+        val inspection = H264StreamFixer.inspect(stream.toByteArray())
+        return SelfTestDecision.Observation(
+            error, timedOut, sawConfig, bytes,
+            bitstreamChecked = true,
+            bitstreamOk = SelfTestDecision.bitstreamOk(inspection),
+            profileLevelId = inspection.profile?.profileLevelId,
+        )
     }
 }

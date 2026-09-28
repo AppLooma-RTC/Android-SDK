@@ -107,6 +107,7 @@ class AppEngine private constructor(
     // Post-processing chain: residual-noise gate, target-level AGC, gain, limiter
     // (see AppAudioOptions.micGain / noiseSuppressionLevel / agcTargetLevelDbfs).
     private val micGain = MicProcessor(options.audio.micGain, options.audio.noiseSuppressionLevel.thresholdDbfs, options.audio.agcTargetLevelDbfs)
+        .also { it.clearVoice = options.audio.effectiveNoiseSuppression == AppNoiseSuppression.CLEAR }
 
     /**
      * The audio scenario this engine really runs with. An engine created while
@@ -204,7 +205,7 @@ class AppEngine private constructor(
     private var lastCanPublish: Boolean? = null
     private var playbackVolume = 100
     private var videoConfig: AppVideoConfig = options.video
-    private var noiseSuppression = true
+    private var noiseSuppression = options.audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF
 
     @Volatile
     var isJoined: Boolean = false
@@ -212,6 +213,29 @@ class AppEngine private constructor(
 
     companion object {
         private const val TAG = "AppLoomaRTC"
+
+        /**
+         * The video codecs this device can send and receive, with whether the
+         * SDK would encode each on hardware. VP8, VP9 and AV1 always have a
+         * software encoder and decoder in the engine; H.264 and H.265 are
+         * sent only on a hardware encoder the SDK trusts, and received when
+         * the phone has a decoder. Unreleased.
+         */
+        @JvmStatic
+        fun getSupportedVideoCodecs(context: android.content.Context): List<AppVideoCodecCapability> {
+            val infos = try { android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.toList() } catch (_: Throwable) { emptyList() }
+            fun hasDecoder(mime: String) = infos.any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, true) } }
+            return listOf(
+                Triple("video/VP8", "video/x-vnd.on2.vp8", true),
+                Triple("video/VP9", "video/x-vnd.on2.vp9", true),
+                Triple("video/H264", "video/avc", false),
+                Triple("video/H265", "video/hevc", false),
+                Triple("video/AV1", "video/av01", true),
+            ).map { (name, mime, software) ->
+                val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime) != null
+                AppVideoCodecCapability(mime = name, hardware = hw, encoder = hw || software, decoder = software || hasDecoder(mime))
+            }
+        }
 
         @Volatile private var debugSink: ((String) -> Unit)? = null
         private var debugTree: timber.log.Timber.Tree? = null
@@ -439,7 +463,7 @@ class AppEngine private constructor(
                     degradationPreference = degradationOf(v.degradation),
                 ),
                 audioTrackCaptureDefaults = LocalAudioTrackOptions(
-                    noiseSuppression = o.audio.noiseSuppression,
+                    noiseSuppression = o.audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF,
                     echoCancellation = o.audio.echoCancellation,
                     autoGainControl = o.audio.autoGainControl,
                 ),
@@ -455,6 +479,7 @@ class AppEngine private constructor(
             CodecMemory.apply(context)
             DeviceTelemetry.region = options.region.code
             DeviceTelemetry.load(context)
+            if (options.experimentalH264Codec2) AppLoomaVideoEncoderFactory.experimentalH264Codec2 = true
             Diagnostics.configure(context, options.remoteDiagnostics)
             val engine = AppEngine(context, appId, eventHandler, options)
             // Once per install and SDK version, in the background; never the camera.
@@ -532,6 +557,7 @@ class AppEngine private constructor(
         flushPending()
         startStats()
 
+        applyAudienceLatency(lastRole == AppRole.AUDIENCE || lastCanPublish == false)
         if (options.role != AppRole.AUDIENCE) {
             if (options.microphone) room.localParticipant.setMicrophoneEnabled(true)
             if (options.camera) room.localParticipant.setCameraEnabled(true)
@@ -969,6 +995,26 @@ class AppEngine private constructor(
     }
 
     private var videoProcessor: AppVideoProcessor? = null
+    private var enhanceFilter: AppVideoFilters? = null
+
+    /**
+     * Built-in camera enhancement: skin smoothing, low-light boost, sharpening
+     * and warmth. Runs before any processor set with [setVideoProcessor].
+     * Pass null (or neutral options) to turn it off. Changing options while
+     * on takes effect on the next frame.
+     */
+    fun setVideoEnhance(options: AppVideoEnhance?) {
+        val on = options != null && !options.isNeutral
+        val existing = enhanceFilter
+        if (on && existing != null) { existing.options = options!!; return }
+        if (!on && existing == null) return
+        enhanceFilter = if (on) AppVideoFilters(options!!) else null
+        appliedProcessorTrack = null
+        onMain { applyVideoProcessor() }
+    }
+
+    /** The enhancement in force, or null when off. */
+    val videoEnhance: AppVideoEnhance? get() = enhanceFilter?.options
     private var appliedProcessorTrack: VideoTrack? = null
     private var appliedSource: livekit.org.webrtc.VideoSource? = null
 
@@ -980,8 +1026,9 @@ class AppEngine private constructor(
         appliedSource = source
         if (source == null) { if (track != null && videoProcessor != null) debug("video processor: capture source not reachable"); return }
         try {
-            source.setVideoProcessor(videoProcessor?.let { ProcessorAdapter(it) })
-            debug("video processor ${if (videoProcessor != null) "installed" else "removed"}")
+            val effective = AppVideoFilters.chain(enhanceFilter, videoProcessor)
+            source.setVideoProcessor(effective?.let { ProcessorAdapter(it) })
+            debug("video processor ${if (effective != null) "installed" else "removed"}")
         } catch (t: Throwable) { debug("video processor failed: $t") }
     }
 
@@ -1006,6 +1053,21 @@ class AppEngine private constructor(
     }
 
     val isNoiseSuppressionEnabled: Boolean get() = noiseSuppression
+
+    /**
+     * Switch between STANDARD, CLEAR (Clear Voice) and OFF at runtime. See
+     * [AppNoiseSuppression]. Moving between STANDARD and CLEAR is instant;
+     * to or from OFF re-captures the microphone like [setNoiseSuppression].
+     * Unreleased.
+     */
+    fun setNoiseSuppressionMode(mode: AppNoiseSuppression) {
+        micGain.clearVoice = mode == AppNoiseSuppression.CLEAR
+        setNoiseSuppression(mode != AppNoiseSuppression.OFF)
+    }
+
+    /** The noise suppression mode in force. Unreleased. */
+    val noiseSuppressionMode: AppNoiseSuppression
+        get() = when { !noiseSuppression -> AppNoiseSuppression.OFF; micGain.clearVoice -> AppNoiseSuppression.CLEAR; else -> AppNoiseSuppression.STANDARD }
 
     /**
      * Grab one frame of your own camera as a Bitmap, on this device only.
@@ -1648,6 +1710,7 @@ class AppEngine private constructor(
             micWanted = true; mixer.micMuted = false
             try { room.localParticipant.setMicrophoneEnabled(true) } catch (t: Throwable) { eventHandler?.onError(t) }
         }
+        applyAudienceLatency(role == AppRole.AUDIENCE || !canPublish)
         debug("seat role=$role canPublish=$canPublish")
         if (roleChanged) eventHandler?.onRoleChanged(role)
     }
@@ -1709,6 +1772,29 @@ class AppEngine private constructor(
      * Default NONE. Unreleased.
      */
     fun setRemoteSubscribeFallback(option: AppFallbackOption) {
+        latencyFallback = false
+        setSubscribeFallback(option)
+    }
+
+    /** True while [AppAudienceLatency.STANDARD] (not the app) chose the subscribe fallback. */
+    private var latencyFallback = false
+
+    /**
+     * [AppEngineOptions.audienceLatency] while the local user only watches.
+     * The engine has no receive-side jitter-buffer control on Android, so
+     * only STANDARD does something: prefer lower video layers under
+     * congestion, unless the app set a fallback itself.
+     */
+    private fun applyAudienceLatency(isAudience: Boolean) {
+        val want = isAudience && options.audienceLatency == AppAudienceLatency.STANDARD
+        if (want && subscribeFallback == AppFallbackOption.NONE) {
+            setSubscribeFallback(AppFallbackOption.VIDEO_LOW_QUALITY); latencyFallback = true
+        } else if (!want && latencyFallback) {
+            setSubscribeFallback(AppFallbackOption.NONE); latencyFallback = false
+        }
+    }
+
+    private fun setSubscribeFallback(option: AppFallbackOption) {
         if (option == subscribeFallback) return
         if (downlinkPolicy.active) restoreSubscribe()
         downlinkPolicy.reset()
@@ -1929,8 +2015,11 @@ internal class MicProcessor(
     private var agcGain = 1f
     /** True once a sample above ±2 proves the buffer is in 16-bit float range. */
     @Volatile private var s16Scale = false
+    /** Clear Voice ([AppNoiseSuppression.CLEAR]): spectral suppression before the gate. */
+    @Volatile var clearVoice = false
+    private val denoiser = ClearVoiceDenoiser()
 
-    override fun isEnabled(): Boolean = gainPercent != 100 || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
+    override fun isEnabled(): Boolean = clearVoice || gainPercent != 100 || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
     override fun getName(): String = "applooma-mic"
     override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f }
     override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f }
@@ -1948,6 +2037,7 @@ internal class MicProcessor(
         // product overshoots the buffer; the buffer's own limit is the truth.
         val n = minOf(numBands * numFrames, fb.limit())
         if (n <= 0) return
+        if (clearVoice) denoiser.process(fb, n) else denoiser.reset()
 
         // The engine hands this stage audio as floats in 16-bit range
         // (±32768), not ±1. Treating it as ±1 made every gain other than

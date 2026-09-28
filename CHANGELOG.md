@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- MediaTek/Codec2 hardware H.264 path available behind remote device config (off by default).
+- Video enhancement: `AppEngine.setVideoEnhance(AppVideoEnhance(beauty, lowLight, sharpen, warmth))` (null turns it off; `AppVideoEnhance.Portrait` preset). Edge-preserving skin smoothing, adaptive low-light boost, sharpening and warmth on the camera frames before encoding, on the CPU at half resolution with reused buffers. Runs before any `setVideoProcessor` processor. `AppVideoFilters` is public for use in your own processor. UIKit: an Enhance button (beauty + low light) in the call controls. Covered by unit tests.
+- Clear Voice: `AppAudioOptions.noiseSuppressionMode` (`AppNoiseSuppression.STANDARD` default, `CLEAR`, `OFF`) and `engine.setNoiseSuppressionMode(mode)` / `noiseSuppressionMode`. CLEAR adds a spectral noise suppressor (DSP, not a neural model; 10 ms latency) in the microphone post-processing. Unit tests: white noise down at least 6 dB, a 440 Hz tone within 3 dB.
+- Audience latency: `AppEngineOptions.audienceLatency` (`AppAudienceLatency.ULTRA_LOW` default, `LOW`, `STANDARD`), applied only while audience. No receive-buffer control on Android: LOW behaves like ULTRA_LOW; STANDARD turns on the VIDEO_LOW_QUALITY subscribe fallback unless the app set one.
+- Codec detection: `AppEngine.getSupportedVideoCodecs(context)` returns `AppVideoCodecCapability(mime, hardware, encoder, decoder)` for VP8, VP9, H.264, H.265 and AV1.
+
 ## rtc-android 0.4.17 · uikit-android 0.2.10 — 2026-09-28
 
 - uikit-android 0.2.10: built on rtc-android 0.4.17 (cloud proxy over TLS 443 with automatic retry). No UIKit API changes.

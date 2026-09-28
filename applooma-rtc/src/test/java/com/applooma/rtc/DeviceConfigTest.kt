@@ -77,4 +77,12 @@ class DeviceConfigTest {
         assertEquals(AppVideoCodec.AUTO, DeviceCaps.codec(AppVideoCodec.AUTO, DeviceVideoConfig(forceCodec = "vp9")))
         assertEquals(AppVideoCodec.AUTO, DeviceCaps.codec(AppVideoCodec.AUTO, DeviceVideoConfig.EMPTY))
     }
+
+    @Test fun parsesCodec2H264Flags() {
+        val on = DeviceVideoConfig.parse("""{"video":{"forceCodec":"h264","h264Codec2":true,"h264ByteBuffer":true}}""")!!
+        assertTrue(on.h264Codec2); assertTrue(on.h264ByteBuffer)
+        val off = DeviceVideoConfig.parse("""{"video":{"h264Codec2":"yes"}}""")!!
+        assertFalse(off.h264Codec2); assertFalse(off.h264ByteBuffer)
+        assertFalse(DeviceVideoConfig.EMPTY.h264Codec2)
+    }
 }

@@ -182,6 +182,46 @@ data class AppAudioOptions @JvmOverloads constructor(
      * and never boosts silence. Since 0.4.6.
      */
     val agcTargetLevelDbfs: Int = 0,
+    /**
+     * Noise suppression mode. STANDARD (default) is the engine's suppressor;
+     * CLEAR adds Clear Voice on top, a stronger spectral suppressor for
+     * steady noise (see [AppNoiseSuppression]); OFF turns suppression off.
+     * [noiseSuppression] = false also means OFF. Unreleased.
+     */
+    val noiseSuppressionMode: AppNoiseSuppression = AppNoiseSuppression.STANDARD,
+) {
+    /** The mode in force once [noiseSuppression] and [noiseSuppressionMode] are combined. */
+    val effectiveNoiseSuppression: AppNoiseSuppression
+        get() = if (!noiseSuppression) AppNoiseSuppression.OFF else noiseSuppressionMode
+}
+
+/**
+ * Noise suppression mode, see [AppAudioOptions.noiseSuppressionMode].
+ *
+ * CLEAR ("Clear Voice") runs a spectral noise suppressor after the standard
+ * one, in the SDK's microphone post-processing: fans, hiss, air conditioning
+ * and traffic rumble drop by 10 dB and more while speech passes. It is a DSP
+ * suppressor, not a neural model, and adds 10 ms of latency. Unreleased.
+ */
+enum class AppNoiseSuppression { STANDARD, CLEAR, OFF }
+
+/**
+ * How much delay an audience member accepts for smoother playback, see
+ * [AppEngineOptions.audienceLatency]. Unreleased.
+ */
+enum class AppAudienceLatency { ULTRA_LOW, LOW, STANDARD }
+
+/**
+ * One video codec this device can handle, from [AppEngine.getSupportedVideoCodecs].
+ * [mime] is `"video/VP8"`, `"video/VP9"`, `"video/H264"`, `"video/H265"` or
+ * `"video/AV1"`. [hardware] is true when the SDK would encode it on a
+ * hardware encoder. Unreleased.
+ */
+data class AppVideoCodecCapability(
+    val mime: String,
+    val hardware: Boolean,
+    val encoder: Boolean,
+    val decoder: Boolean,
 )
 
 /**
@@ -258,6 +298,25 @@ data class AppEngineOptions @JvmOverloads constructor(
      * relays. Reported by [AppEventHandler.onProxyStateChanged]. Unreleased.
      */
     val cloudProxy: AppCloudProxy = AppCloudProxy.AUTO,
+    /**
+     * Audience latency tier, applied only while the local user is audience
+     * (not publishing). ULTRA_LOW (default) is the lowest delay. LOW and
+     * STANDARD trade delay for smoothness on bad networks; on Android the
+     * engine has no receive-side jitter-buffer control, so here LOW behaves
+     * like ULTRA_LOW and STANDARD only makes the receiver prefer lower video
+     * layers under congestion (it turns on
+     * [AppEngine.setRemoteSubscribeFallback] VIDEO_LOW_QUALITY unless you set
+     * a fallback yourself). Unreleased.
+     */
+    val audienceLatency: AppAudienceLatency = AppAudienceLatency.ULTRA_LOW,
+    /**
+     * Experimental, for local testing only; do not ship with this on. Allows
+     * hardware H.264 on Codec2 encoders (MediaTek, newer Qualcomm) that are
+     * otherwise kept on VP8, using the SDK's tuned encoder settings and
+     * stream fixes. In production this path is enabled per device model by
+     * AppLooma's remote device config. Default false. Unreleased.
+     */
+    val experimentalH264Codec2: Boolean = false,
 )
 
 /** See [AppEngineOptions.cloudProxy]. Unreleased. */

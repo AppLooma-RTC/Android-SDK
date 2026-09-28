@@ -112,6 +112,8 @@ internal object SelfTestDecision {
     const val NO_KEY_FRAME = "no_key_frame"
     const val ENCODER_ERROR = "encoder_error"
     const val TIMEOUT = "timeout"
+    /** Codec2 H.264 path: the stream is not constrained baseline, or lacks SPS/PPS/IDR. */
+    const val BAD_BITSTREAM = "bad_bitstream"
 
     /** Output has to show up within this long of the first frame fed. */
     const val OUTPUT_WINDOW_MS = 2_000L
@@ -127,6 +129,12 @@ internal object SelfTestDecision {
         val sawConfigOrKeyFrame: Boolean,
         /** Bytes of encoded output within [OUTPUT_WINDOW_MS]. */
         val outputBytes: Long,
+        /** Whether the bitstream itself was inspected (Codec2 H.264 path only). */
+        val bitstreamChecked: Boolean = false,
+        /** With [bitstreamChecked]: SPS, PPS and an IDR present and the SPS is constrained baseline. */
+        val bitstreamOk: Boolean = true,
+        /** With [bitstreamChecked]: the SPS profile-level-id, when there was an SPS. */
+        val profileLevelId: String? = null,
     )
 
     /** Null means the encoder passed; otherwise the failure reason. */
@@ -135,10 +143,18 @@ internal object SelfTestDecision {
         o.outputBytes <= 0L && o.timedOut -> TIMEOUT
         o.outputBytes <= 0L -> NO_OUTPUT
         !o.sawConfigOrKeyFrame -> NO_KEY_FRAME
+        o.bitstreamChecked && !o.bitstreamOk -> BAD_BITSTREAM
         else -> null
     }
 
     /** Whether the self-test still has to run for this SDK version, given what was stored after the last run. */
     fun shouldRun(enabled: Boolean, storedVersion: String?, sdkVersion: String): Boolean =
         enabled && storedVersion != sdkVersion
+
+    /** Whether a bitstream inspection passes the Codec2 H.264 checks. */
+    fun bitstreamOk(i: H264StreamFixer.Inspection): Boolean =
+        i.hasSps && i.hasPps && i.idrCount > 0 && i.profile?.isConstrainedBaseline == true
+
+    /** Version key stored after a run; the Codec2 path gets its own, so enabling it re-runs the test. */
+    fun versionKey(sdkVersion: String, codec2H264: Boolean): String = if (codec2H264) "$sdkVersion+c2" else sdkVersion
 }

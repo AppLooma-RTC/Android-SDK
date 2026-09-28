@@ -50,7 +50,10 @@ internal object AppLoomaEncoderBridge {
 
     /**
      * The engine's MediaCodec encoder, built exactly as its own factory builds
-     * it, minus the vendor gate.
+     * it, minus the vendor gate. With [h264Tweaks], the SDK's modified copy of
+     * it (AppLoomaHardwareVideoEncoder): constrained-baseline profile/level,
+     * no B-frames, low latency, 2 s I-frame interval, and key frames kept when
+     * they arrive in a codec-config buffer. Used for Codec2 H.264 encoders only.
      */
     fun createHardwareEncoder(
         codecName: String,
@@ -62,7 +65,8 @@ internal object AppLoomaEncoderBridge {
         forcedKeyFrameIntervalMs: Int,
         adjuster: Adjuster,
         sharedContext: EglBase14.Context?,
-    ): VideoEncoder = HardwareVideoEncoder(
+        h264Tweaks: Boolean = false,
+    ): VideoEncoder = if (h264Tweaks) AppLoomaHardwareVideoEncoder(
         MediaCodecWrapperFactoryImpl(),
         codecName,
         type.engine(),
@@ -71,11 +75,25 @@ internal object AppLoomaEncoderBridge {
         params,
         keyFrameIntervalSec,
         forcedKeyFrameIntervalMs,
-        when (adjuster) {
-            Adjuster.DYNAMIC -> DynamicBitrateAdjuster()
-            Adjuster.FRAMERATE -> FramerateBitrateAdjuster()
-            Adjuster.NONE -> BaseBitrateAdjuster()
-        },
+        adjuster.create(),
+        sharedContext,
+        true,
+    ) else HardwareVideoEncoder(
+        MediaCodecWrapperFactoryImpl(),
+        codecName,
+        type.engine(),
+        surfaceColorFormat,
+        yuvColorFormat,
+        params,
+        keyFrameIntervalSec,
+        forcedKeyFrameIntervalMs,
+        adjuster.create(),
         sharedContext,
     )
+
+    private fun Adjuster.create(): BitrateAdjuster = when (this) {
+        Adjuster.DYNAMIC -> DynamicBitrateAdjuster()
+        Adjuster.FRAMERATE -> FramerateBitrateAdjuster()
+        Adjuster.NONE -> BaseBitrateAdjuster()
+    }
 }

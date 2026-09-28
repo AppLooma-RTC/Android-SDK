@@ -15,6 +15,14 @@ internal data class DeviceVideoConfig(
     val maxFps: Int = 0,
     val maxBitrateKbps: Int = 0,
     val disableSimulcast: Boolean = false,
+    /**
+     * Allow H.264 on hardware encoders outside the proven OMX.qcom / OMX.Exynos
+     * set (Codec2 c2.mtk / c2.qti / …), driven through the SDK's tuned encoder
+     * and stream fixer. Server allowlist per model; off by default.
+     */
+    val h264Codec2: Boolean = false,
+    /** With [h264Codec2]: feed that encoder byte buffers (YUV) instead of a surface. */
+    val h264ByteBuffer: Boolean = false,
     val ttlSeconds: Long = DEFAULT_TTL_S,
     /** Server asks this device to upload its diagnostics after every call (`diag.enabled`). */
     val diagEnabled: Boolean = false,
@@ -41,6 +49,8 @@ internal data class DeviceVideoConfig(
                 maxFps = positive("maxFps"),
                 maxBitrateKbps = positive("maxBitrateKbps"),
                 disableSimulcast = v["disableSimulcast"] == true,
+                h264Codec2 = v["h264Codec2"] == true,
+                h264ByteBuffer = v["h264ByteBuffer"] == true,
                 ttlSeconds = ttl,
                 diagEnabled = diag,
             )

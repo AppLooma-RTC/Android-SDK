@@ -48,6 +48,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
     var bandwidthSince by remember { mutableStateOf<Long?>(null) }
     var mic by remember { mutableStateOf(true) }
     var cam by remember { mutableStateOf(true) }
+    var enhance by remember { mutableStateOf(false) }
     var speaker by remember { mutableStateOf(video) }
     var audioRoute by remember { mutableStateOf<AppAudioRoute?>(null) }
     var ended by remember { mutableStateOf(false) }
@@ -154,6 +155,7 @@ fun AppLoomaCall(kit: AppLoomaKit, room: String, video: Boolean = true, onLeave:
             SpeakerBtn(speaker, audioRoute, { speaker = !speaker; engine.setSpeakerphone(speaker) }, label = "Speaker")
             RoundBtn(Icons.Rounded.CallEnd, onClose, size = 66.dp, danger = true, label = "End")
             if (video) RoundBtn(Icons.Rounded.Cameraswitch, { engine.switchCamera() }, label = "Flip")
+            if (video) RoundBtn(Icons.Rounded.AutoFixHigh, { enhance = !enhance; engine.setVideoEnhance(if (enhance) AppVideoEnhance.Portrait else null) }, brand = enhance, label = "Enhance")
         }
     }
 }

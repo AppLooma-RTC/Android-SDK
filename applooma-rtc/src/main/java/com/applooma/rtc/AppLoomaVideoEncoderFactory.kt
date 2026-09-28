@@ -90,11 +90,16 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
             }
 
             val name = codec.name
-            val surfaceFormat = (eglContext as? EglBase14.Context)?.let { AppLoomaEncoderBridge.surfaceColorFormat(caps) }
+            // Codec2 H.264 (server-enabled per model): the SDK's tuned encoder copy plus the stream fixer.
+            val codec2H264 = type == Codec.H264 && !isProvenH264(name) && h264Codec2Enabled()
+            val byteBuffer = codec2H264 && h264ByteBufferEnabled()
+            val sharedContext = if (byteBuffer) null else eglContext as? EglBase14.Context
+            val surfaceFormat = sharedContext?.let { AppLoomaEncoderBridge.surfaceColorFormat(caps) }
             val yuvFormat = AppLoomaEncoderBridge.yuvColorFormat(caps)
             if (surfaceFormat == null && yuvFormat == null) return null
+            if (codec2H264) AppEngine.debug("h264: codec2 path encoder=$name input=${if (surfaceFormat != null) "surface" else "bytebuffer"}")
 
-            return AppLoomaEncoderBridge.createHardwareEncoder(
+            val encoder = AppLoomaEncoderBridge.createHardwareEncoder(
                 codecName = name,
                 type = type,
                 surfaceColorFormat = surfaceFormat,
@@ -103,8 +108,12 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
                 keyFrameIntervalSec = PERIODIC_KEY_FRAME_INTERVAL_S,
                 forcedKeyFrameIntervalMs = forcedKeyFrameIntervalMs(type, name),
                 adjuster = bitrateAdjuster(type, name),
-                sharedContext = eglContext as? EglBase14.Context,
+                sharedContext = sharedContext,
+                h264Tweaks = codec2H264,
             )
+            return if (!codec2H264) encoder else H264FixingEncoder(encoder) { id ->
+                reportFailure(info.name, "h264 profile $id is not constrained baseline")
+            }
         }
 
         // The engine's own tuning per vendor, plus MediaTek: its encoders honour
@@ -216,7 +225,7 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
         private val failureListeners = java.util.concurrent.CopyOnWriteArraySet<(String, String) -> Unit>()
         internal fun addFailureListener(l: (String, String) -> Unit) { failureListeners += l }
         internal fun removeFailureListener(l: (String, String) -> Unit) { failureListeners -= l }
-        private fun reportFailure(codec: String, detail: String) {
+        internal fun reportFailure(codec: String, detail: String) {
             failureListeners.forEach { try { it(codec, detail) } catch (_: Throwable) {} }
         }
 
@@ -242,6 +251,39 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
 
         private fun isExynos(name: String) = name.startsWith("OMX.Exynos.", true) || name.startsWith("c2.exynos.", true)
         private val H264_PROVEN_PREFIXES = arrayOf("OMX.qcom.", "OMX.Exynos.")
+        private fun isProvenH264(name: String) = H264_PROVEN_PREFIXES.any { name.startsWith(it, true) }
+
+        /**
+         * Local test switch for the Codec2 H.264 path, set from
+         * [AppEngineOptions.experimentalH264Codec2]. Not for production: the
+         * server's device config (`video.h264Codec2`) is the real gate.
+         */
+        @Volatile internal var experimentalH264Codec2 = false
+
+        /** Android system property that also turns the path on for a test build: `adb shell setprop debug.applooma.h264codec2 1`. */
+        private const val PROP_H264_CODEC2 = "debug.applooma.h264codec2"
+        /** Same, for byte-buffer input on that path: `adb shell setprop debug.applooma.h264bytebuffer 1`. */
+        private const val PROP_H264_BYTEBUFFER = "debug.applooma.h264bytebuffer"
+
+        private fun systemFlag(key: String): Boolean = try {
+            val v = Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, key) as? String
+            v == "1" || v.equals("true", true)
+        } catch (_: Throwable) { false }
+
+        /**
+         * Whether H.264 may run on a hardware encoder outside the proven set
+         * (Codec2 c2.mtk / c2.qti / …). Off unless the server's device config,
+         * the experimental option or the debug property turns it on.
+         */
+        internal fun h264Codec2Enabled(): Boolean =
+            DeviceTelemetry.current.h264Codec2 || experimentalH264Codec2 || systemFlag(PROP_H264_CODEC2)
+
+        /** Whether H.264 on encoder [name] runs through the Codec2 path (tuned encoder + stream fixer). */
+        internal fun isCodec2H264(name: String): Boolean = !isProvenH264(name) && h264Codec2Enabled()
+
+        /** With [h264Codec2Enabled]: feed that encoder byte buffers instead of a surface. */
+        internal fun h264ByteBufferEnabled(): Boolean =
+            h264Codec2Enabled() && (DeviceTelemetry.current.h264ByteBuffer || systemFlag(PROP_H264_BYTEBUFFER))
 
         private fun isMediaTek(name: String) = name.startsWith("OMX.MTK.", true) || name.startsWith("c2.mtk.", true)
 
@@ -272,8 +314,10 @@ internal class AppLoomaVideoEncoderFactory(private val eglContext: EglBase.Conte
             // receives packets, but no other phone can bind the stream: seen on
             // MediaTek (c2.mtk, realme RMX3941) and on Qualcomm Codec2
             // (realme RMX5555, 2026-09-27: every viewer "track not bound").
-            // Those phones publish VP8 instead, which every phone decodes.
-            if (mime.equals("video/avc", true) && !H264_PROVEN_PREFIXES.any { name.startsWith(it, true) }) return false
+            // Those phones publish VP8 instead, which every phone decodes, unless
+            // the server enables the Codec2 H.264 path for the model (h264Codec2),
+            // which drives them through the tuned encoder and the stream fixer.
+            if (mime.equals("video/avc", true) && !isProvenH264(name) && !h264Codec2Enabled()) return false
             return true
         }
 

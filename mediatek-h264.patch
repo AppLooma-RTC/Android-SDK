@@ -1,0 +1,135 @@
+PROPOSAL ONLY - not applied. Parts 1 and 4 of MEDIATEK_H264.md, plus the DeviceVideoConfig flag.
+Part 2 (AppLoomaHardwareVideoEncoder, a copy of the engine's HardwareVideoEncoder with the
+MediaFormat/output changes) is described in the MD; its diff against the engine file is:
+  - in initEncode, H.264 branch, case H264_CONSTRAINED_BASELINE_3_1:
+      format.setInteger("profile", Build.VERSION.SDK_INT >= 27 ? AVCProfileConstrainedBaseline : AVCProfileBaseline);
+      format.setInteger("level", height > 720 ? AVCLevel4 : AVCLevel31);
+  - format.setInteger("max-bframes", 0); if (SDK>=30) format.setInteger(KEY_LATENCY, 1);
+    format.setInteger(KEY_PRIORITY, 0); if (SDK>=29) format.setInteger(KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1);
+  - keyFrameIntervalSec = 2
+  - deliverEncodedImage: on CODEC_CONFIG, save SPS/PPS, then `return` only if the buffer holds no NAL type 5.
+
+--- /dev/null
++++ b/sdks/android/applooma-rtc/src/main/java/com/applooma/rtc/H264StreamFixer.kt
+@@ -0,0 +1,103 @@
++package com.applooma.rtc
++
++import livekit.org.webrtc.EncodedImage
++import livekit.org.webrtc.VideoCodecStatus
++import livekit.org.webrtc.VideoEncoder
++import java.io.ByteArrayOutputStream
++import java.nio.ByteBuffer
++
++/**
++ * Normalises an Annex-B H.264 stream from Codec2 encoders before it reaches the packetizer:
++ * caches SPS/PPS, prepends them to every IDR that lacks them, drops AUD/SEI, marks any
++ * access unit containing an IDR as a key frame, and checks the SPS profile.
++ */
++internal class H264StreamFixer(
++    private val inner: VideoEncoder.Callback,
++    private val onBadProfile: (String) -> Unit,
++) : VideoEncoder.Callback {
++    private var sps: ByteArray? = null
++    private var pps: ByteArray? = null
++    private var profileChecked = false
++
++    override fun onEncodedFrame(image: EncodedImage, info: VideoEncoder.CodecSpecificInfo) {
++        val src = image.buffer.duplicate()
++        val bytes = ByteArray(src.remaining()).also { src.get(it) }
++        val nals = split(bytes)
++        var hasIdr = false; var hasSps = false; var hasPps = false
++        val out = ByteArrayOutputStream(bytes.size + 64)
++        for (n in nals) when (n[0].toInt() and 0x1F) {
++            7 -> { sps = n; hasSps = true; checkProfile(n) }
++            8 -> { pps = n; hasPps = true }
++            5 -> hasIdr = true
++        }
++        if (hasIdr) {
++            if (!hasSps) sps?.let { write(out, it) }
++            if (!hasPps) pps?.let { write(out, it) }
++        }
++        for (n in nals) {
++            val t = n[0].toInt() and 0x1F
++            if (t == 9 || t == 6) continue // AUD, SEI
++            write(out, n)
++        }
++        val fixed = out.toByteArray()
++        val buf = ByteBuffer.allocateDirect(fixed.size).put(fixed).also { it.rewind() }
++        val type = if (hasIdr) EncodedImage.FrameType.VideoFrameKey else image.frameType
++        val rebuilt = image.toBuilder().setBuffer(buf, null).setFrameType(type).createEncodedImage()
++        inner.onEncodedFrame(rebuilt, info)
++    }
++
++    private fun checkProfile(sps: ByteArray) {
++        if (profileChecked || sps.size < 4) return
++        profileChecked = true
++        val profileIdc = sps[1].toInt() and 0xFF
++        val constraints = sps[2].toInt() and 0xFF
++        val id = "%02x%02x%02x".format(profileIdc, constraints, sps[3].toInt() and 0xFF)
++        AppEngine.debug("h264 fixer: encoder profile-level-id=$id")
++        // Constrained baseline = profile_idc 66 with constraint_set1 (0x40).
++        if (profileIdc != 66 || constraints and 0x40 == 0) onBadProfile(id)
++    }
++
++    companion object {
++        private val START = byteArrayOf(0, 0, 0, 1)
++        private fun write(o: ByteArrayOutputStream, nal: ByteArray) { o.write(START); o.write(nal) }
++
++        /** NAL payloads (without start codes) of an Annex-B buffer. */
++        fun split(b: ByteArray): List<ByteArray> {
++            val starts = ArrayList<IntArray>() // [startCodeIndex, payloadIndex]
++            var i = 0
++            while (i + 2 < b.size) {
++                if (b[i].toInt() == 0 && b[i + 1].toInt() == 0) {
++                    if (b[i + 2].toInt() == 1) { starts += intArrayOf(i, i + 3); i += 3; continue }
++                    if (i + 3 < b.size && b[i + 2].toInt() == 0 && b[i + 3].toInt() == 1) { starts += intArrayOf(i, i + 4); i += 4; continue }
++                }
++                i++
++            }
++            return starts.mapIndexedNotNull { k, s ->
++                val end = if (k + 1 < starts.size) starts[k + 1][0] else b.size
++                if (end > s[1]) b.copyOfRange(s[1], end) else null
++            }
++        }
++
++        /** For the self-test: summary of a raw encoder output stream. */
++        data class Inspection(val hasSps: Boolean, val hasPps: Boolean, val hasIdr: Boolean, val profileLevelId: String?)
++        fun inspect(stream: ByteArray): Inspection {
++            var s = false; var p = false; var idr = false; var id: String? = null
++            for (n in split(stream)) when (n[0].toInt() and 0x1F) {
++                7 -> { s = true; if (id == null && n.size >= 4) id = "%02x%02x%02x".format(n[1], n[2], n[3]) }
++                8 -> p = true
++                5 -> idr = true
++            }
++            return Inspection(s, p, idr, id)
++        }
++    }
++}
+--- a/sdks/android/applooma-rtc/src/main/java/com/applooma/rtc/AppLoomaVideoEncoderFactory.kt
++++ b/sdks/android/applooma-rtc/src/main/java/com/applooma/rtc/AppLoomaVideoEncoderFactory.kt
+@@ class LayerEncoder
+         override fun initEncode(s: VideoEncoder.Settings, callback: VideoEncoder.Callback): VideoCodecStatus = on {
+             settings = s
+-            val status = try { encoder.initEncode(s, callback) } catch (t: Throwable) { reportFailure(codecName, "init threw $t"); throw t }
++            val cb = if (codecName == "H264" && codec2H264Enabled)
++                H264StreamFixer(callback) { id -> reportFailure(codecName, "h264 profile $id is not constrained baseline") }
++            else callback
++            val status = try { encoder.initEncode(s, cb) } catch (t: Throwable) { reportFailure(codecName, "init threw $t"); throw t }
+@@ companion object
++        /** Set from DeviceVideoConfig.h264Codec2 by the server's DeviceRule; off by default. */
++        @Volatile internal var codec2H264Enabled = false
+@@ fun isUsableHardwareEncoder
+-            if (mime.equals("video/avc", true) && !H264_PROVEN_PREFIXES.any { name.startsWith(it, true) }) return false
++            if (mime.equals("video/avc", true) && !H264_PROVEN_PREFIXES.any { name.startsWith(it, true) } && !codec2H264Enabled) return false
+--- a/sdks/android/applooma-rtc/src/main/java/com/applooma/rtc/DeviceConfig.kt
++++ b/sdks/android/applooma-rtc/src/main/java/com/applooma/rtc/DeviceConfig.kt
+@@ internal data class DeviceVideoConfig(
+     val disableSimulcast: Boolean = false,
++    /** Server allowlist: drive H.264 on Codec2 encoders (c2.mtk / c2.qti) with the stream fixes. */
++    val h264Codec2: Boolean = false,
++    /** With [h264Codec2]: feed the encoder byte buffers instead of a surface. */
++    val h264ByteBuffer: Boolean = false,
+@@ fun parse
+                 disableSimulcast = v["disableSimulcast"] == true,
++                h264Codec2 = v["h264Codec2"] == true,
++                h264ByteBuffer = v["h264ByteBuffer"] == true,
