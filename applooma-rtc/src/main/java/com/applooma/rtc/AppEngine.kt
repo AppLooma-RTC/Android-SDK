@@ -219,7 +219,7 @@ class AppEngine private constructor(
          * SDK would encode each on hardware. VP8, VP9 and AV1 always have a
          * software encoder and decoder in the engine; H.264 and H.265 are
          * sent only on a hardware encoder the SDK trusts, and received when
-         * the phone has a decoder. Unreleased.
+         * the phone has a decoder. Since 0.4.18.
          */
         @JvmStatic
         fun getSupportedVideoCodecs(context: android.content.Context): List<AppVideoCodecCapability> {
@@ -370,7 +370,7 @@ class AppEngine private constructor(
         /**
          * Whether this phone can publish [AppVideoMode.ULTRA_HD_4K]: the
          * hardware encoder for the codec the SDK would pick accepts 3840x2160.
-         * When false, ULTRA_HD_4K falls back to STABLE_HD. Unreleased.
+         * When false, ULTRA_HD_4K falls back to STABLE_HD. Since 0.4.11.
          */
         @JvmStatic fun isUltraHdSupported(): Boolean = ultraHdGate
 
@@ -498,7 +498,7 @@ class AppEngine private constructor(
          *
          * Runs by itself once per install and SDK version after the first
          * [create] unless [AppEngineOptions.encoderSelfTest] is false; call it
-         * yourself for a support screen. Unreleased.
+         * yourself for a support screen. Since 0.4.16.
          */
         @JvmStatic
         fun runEncoderSelfTest(context: Context, callback: (AppEncoderSelfTestResult) -> Unit) {
@@ -568,7 +568,7 @@ class AppEngine private constructor(
     /* Cloud proxy                                                         */
     /* ------------------------------------------------------------------ */
 
-    /** Current cloud proxy state, see [AppEngineOptions.cloudProxy]. Unreleased. */
+    /** Current cloud proxy state, see [AppEngineOptions.cloudProxy]. Since 0.4.17. */
     var proxyState: AppProxyState = AppProxyState.DIRECT
         private set
 
@@ -1058,14 +1058,14 @@ class AppEngine private constructor(
      * Switch between STANDARD, CLEAR (Clear Voice) and OFF at runtime. See
      * [AppNoiseSuppression]. Moving between STANDARD and CLEAR is instant;
      * to or from OFF re-captures the microphone like [setNoiseSuppression].
-     * Unreleased.
+     * Since 0.4.18.
      */
     fun setNoiseSuppressionMode(mode: AppNoiseSuppression) {
         micGain.clearVoice = mode == AppNoiseSuppression.CLEAR
         setNoiseSuppression(mode != AppNoiseSuppression.OFF)
     }
 
-    /** The noise suppression mode in force. Unreleased. */
+    /** The noise suppression mode in force. Since 0.4.18. */
     val noiseSuppressionMode: AppNoiseSuppression
         get() = when { !noiseSuppression -> AppNoiseSuppression.OFF; micGain.clearVoice -> AppNoiseSuppression.CLEAR; else -> AppNoiseSuppression.STANDARD }
 
@@ -1738,7 +1738,7 @@ class AppEngine private constructor(
      * SDK uses it from now on for its own requests and for a later join, and
      * warns again 30 s before the new one expires. While you are connected
      * the media server keeps the live connection's credential fresh by
-     * itself, so the call is not interrupted. Unreleased.
+     * itself, so the call is not interrupted. Since 0.4.16.
      */
     fun renewToken(token: String) {
         if (token.isBlank()) return
@@ -1769,7 +1769,7 @@ class AppEngine private constructor(
      * AUDIO_ONLY stops receiving remote video. Everything comes back after
      * about 10 s of good network; video you turned off yourself stays off.
      * Reported by [AppEventHandler.onFallbackStateChanged] with isLocal false.
-     * Default NONE. Unreleased.
+     * Default NONE. Since 0.4.16.
      */
     fun setRemoteSubscribeFallback(option: AppFallbackOption) {
         latencyFallback = false
@@ -1806,7 +1806,7 @@ class AppEngine private constructor(
      * about 4 s: VIDEO_LOW_QUALITY lowers the camera bitrate to 30 % (at
      * least 300 kbps), AUDIO_ONLY pauses the camera. Restored after about
      * 10 s of good network. Reported by [AppEventHandler.onFallbackStateChanged]
-     * with isLocal true. Default NONE. Unreleased.
+     * with isLocal true. Default NONE. Since 0.4.16.
      */
     fun setLocalPublishFallback(option: AppFallbackOption) {
         if (option == publishFallback) return
@@ -1903,7 +1903,7 @@ class AppEngine private constructor(
      * main thread. Gives up after 10 s with [AppNetworkTestResult.error] set.
      * Does not touch the channel you are in. Loss and jitter are measured on
      * the control traffic only, so they read 0 on a clean line; quality is
-     * the media server's estimate. Unreleased.
+     * the media server's estimate. Since 0.4.16.
      */
     fun startNetworkTest(serverUrl: String, token: String, callback: (AppNetworkTestResult) -> Unit) {
         networkTestJob?.cancel()
@@ -1968,7 +1968,7 @@ class AppEngine private constructor(
         }
     }
 
-    /** Stop a running [startNetworkTest]; its callback is not called. Unreleased. */
+    /** Stop a running [startNetworkTest]; its callback is not called. Since 0.4.16. */
     fun stopNetworkTest() { networkTestJob?.cancel(); networkTestJob = null }
 
     private fun failedTest(error: String) = AppNetworkTestResult(AppNetworkQuality.UNKNOWN, AppNetworkQuality.UNKNOWN, -1, -1, 0f, 0f, error)
@@ -1979,7 +1979,7 @@ class AppEngine private constructor(
      * problem" button. [reason] is a short label you choose ("user_report").
      * Only SDK-produced lines are sent, scrubbed of names, metadata, tokens
      * and URL parameters; never audio, video or messages. Does nothing when
-     * [AppEngineOptions.remoteDiagnostics] is false. Unreleased.
+     * [AppEngineOptions.remoteDiagnostics] is false. Since 0.4.16.
      */
     fun uploadDiagnostics(reason: String) {
         try { Diagnostics.requestUpload(reason) } catch (_: Throwable) {}

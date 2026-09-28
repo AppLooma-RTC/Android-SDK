@@ -74,7 +74,7 @@ enum class AppVideoDegradation { AUTO, KEEP_RESOLUTION, KEEP_FRAMERATE, BALANCED
  * layers by view size and network, resolution may drop to keep motion smooth.
  *
  * Any field you set explicitly on [AppVideoConfig] wins over the mode.
- * Unreleased.
+ * Since 0.4.11.
  */
 enum class AppVideoMode { STABLE_HD, ULTRA_HD_4K, ADAPTIVE }
 
@@ -118,7 +118,7 @@ data class AppVideoConfig @JvmOverloads constructor(
      * the value is kept but does not change what is sent. Since 0.4.10.
      */
     val minBitrate: Int = 0,
-    /** The overall tuning; see [AppVideoMode]. Unreleased. */
+    /** The overall tuning; see [AppVideoMode]. Since 0.4.11. */
     val mode: AppVideoMode = AppVideoMode.STABLE_HD,
 )
 
@@ -186,7 +186,7 @@ data class AppAudioOptions @JvmOverloads constructor(
      * Noise suppression mode. STANDARD (default) is the engine's suppressor;
      * CLEAR adds Clear Voice on top, a stronger spectral suppressor for
      * steady noise (see [AppNoiseSuppression]); OFF turns suppression off.
-     * [noiseSuppression] = false also means OFF. Unreleased.
+     * [noiseSuppression] = false also means OFF. Since 0.4.18.
      */
     val noiseSuppressionMode: AppNoiseSuppression = AppNoiseSuppression.STANDARD,
 ) {
@@ -201,13 +201,13 @@ data class AppAudioOptions @JvmOverloads constructor(
  * CLEAR ("Clear Voice") runs a spectral noise suppressor after the standard
  * one, in the SDK's microphone post-processing: fans, hiss, air conditioning
  * and traffic rumble drop by 10 dB and more while speech passes. It is a DSP
- * suppressor, not a neural model, and adds 10 ms of latency. Unreleased.
+ * suppressor, not a neural model, and adds 10 ms of latency. Since 0.4.18.
  */
 enum class AppNoiseSuppression { STANDARD, CLEAR, OFF }
 
 /**
  * How much delay an audience member accepts for smoother playback, see
- * [AppEngineOptions.audienceLatency]. Unreleased.
+ * [AppEngineOptions.audienceLatency]. Since 0.4.18.
  */
 enum class AppAudienceLatency { ULTRA_LOW, LOW, STANDARD }
 
@@ -215,7 +215,7 @@ enum class AppAudienceLatency { ULTRA_LOW, LOW, STANDARD }
  * One video codec this device can handle, from [AppEngine.getSupportedVideoCodecs].
  * [mime] is `"video/VP8"`, `"video/VP9"`, `"video/H264"`, `"video/H265"` or
  * `"video/AV1"`. [hardware] is true when the SDK would encode it on a
- * hardware encoder. Unreleased.
+ * hardware encoder. Since 0.4.18.
  */
 data class AppVideoCodecCapability(
     val mime: String,
@@ -271,14 +271,14 @@ data class AppEngineOptions @JvmOverloads constructor(
     /**
      * Run the encoder self-test ([AppEngine.runEncoderSelfTest]) once per
      * install and SDK version, in the background after the first
-     * [AppEngine.create]. It never touches the camera. Unreleased.
+     * [AppEngine.create]. It never touches the camera. Since 0.4.16.
      */
     val encoderSelfTest: Boolean = true,
     /**
      * Where your users are, as a hint for server selection. Preparation for
      * multi-region: today every region connects to the server URL your token
      * endpoint returns; the value is sent with the SDK's device-tuning
-     * request and reports. Unreleased.
+     * request and reports. Since 0.4.16.
      */
     val region: AppRegion = AppRegion.AUTO,
     /**
@@ -287,7 +287,7 @@ data class AppEngineOptions @JvmOverloads constructor(
      * AppLooma after a call that had a problem, when support switched
      * collection on for this device or project, or when you call
      * [AppEngine.uploadDiagnostics]. Kept 14 days. `false` turns every upload
-     * off. Unreleased.
+     * off. Since 0.4.16.
      */
     val remoteDiagnostics: Boolean = true,
     /**
@@ -295,7 +295,7 @@ data class AppEngineOptions @JvmOverloads constructor(
      * AUTO (default) connects directly and, when the first join fails with a
      * connection or network timeout, retries once through AppLooma's relay on
      * TLS port 443. FORCE_TLS_443 always relays on TLS 443. OFF never
-     * relays. Reported by [AppEventHandler.onProxyStateChanged]. Unreleased.
+     * relays. Reported by [AppEventHandler.onProxyStateChanged]. Since 0.4.17.
      */
     val cloudProxy: AppCloudProxy = AppCloudProxy.AUTO,
     /**
@@ -306,7 +306,7 @@ data class AppEngineOptions @JvmOverloads constructor(
      * like ULTRA_LOW and STANDARD only makes the receiver prefer lower video
      * layers under congestion (it turns on
      * [AppEngine.setRemoteSubscribeFallback] VIDEO_LOW_QUALITY unless you set
-     * a fallback yourself). Unreleased.
+     * a fallback yourself). Since 0.4.18.
      */
     val audienceLatency: AppAudienceLatency = AppAudienceLatency.ULTRA_LOW,
     /**
@@ -314,23 +314,23 @@ data class AppEngineOptions @JvmOverloads constructor(
      * hardware H.264 on Codec2 encoders (MediaTek, newer Qualcomm) that are
      * otherwise kept on VP8, using the SDK's tuned encoder settings and
      * stream fixes. In production this path is enabled per device model by
-     * AppLooma's remote device config. Default false. Unreleased.
+     * AppLooma's remote device config. Default false. Since 0.4.18.
      */
     val experimentalH264Codec2: Boolean = false,
 )
 
-/** See [AppEngineOptions.cloudProxy]. Unreleased. */
+/** See [AppEngineOptions.cloudProxy]. Since 0.4.17. */
 enum class AppCloudProxy { AUTO, FORCE_TLS_443, OFF }
 
 /**
  * Whether media runs through the cloud proxy. DIRECT: not relayed (default,
  * also after leaving); CONNECTING: joining through the relay on TLS 443
  * (forced, or the AUTO retry after a failed direct join); CONNECTED: in the
- * channel through the relay. Unreleased.
+ * channel through the relay. Since 0.4.17.
  */
 enum class AppProxyState { DIRECT, CONNECTING, CONNECTED }
 
-/** Region hint, see [AppEngineOptions.region]. Unreleased. */
+/** Region hint, see [AppEngineOptions.region]. Since 0.4.16. */
 enum class AppRegion(val code: String) { AUTO("auto"), BD("bd"), IN("in"), SA("sa"), SG("sg"), US("us") }
 
 /**
@@ -338,11 +338,11 @@ enum class AppRegion(val code: String) { AUTO("auto"), BD("bd"), IN("in"), SA("s
  * NONE keeps everything (default); VIDEO_LOW_QUALITY drops to the low layer
  * (receiving) or a lower bitrate (sending); AUDIO_ONLY drops video entirely
  * until the network recovers. See [AppEngine.setRemoteSubscribeFallback] and
- * [AppEngine.setLocalPublishFallback]. Unreleased.
+ * [AppEngine.setLocalPublishFallback]. Since 0.4.16.
  */
 enum class AppFallbackOption { NONE, VIDEO_LOW_QUALITY, AUDIO_ONLY }
 
-/** The result of [AppEngine.runEncoderSelfTest]. Unreleased. */
+/** The result of [AppEngine.runEncoderSelfTest]. Since 0.4.16. */
 data class AppEncoderSelfTestResult(
     /** True when the encoder produced a decodable start (parameter sets or a key frame) and data in time, or there was nothing to test. */
     val passed: Boolean,
@@ -353,7 +353,7 @@ data class AppEncoderSelfTestResult(
     val elapsedMs: Long,
 )
 
-/** The result of [AppEngine.startNetworkTest]. Unreleased. */
+/** The result of [AppEngine.startNetworkTest]. Since 0.4.16. */
 data class AppNetworkTestResult(
     val uplinkQuality: AppNetworkQuality,
     val downlinkQuality: AppNetworkQuality,
@@ -640,19 +640,19 @@ abstract class AppEventHandler {
      * A network fallback started or ended. `isLocal` true is what you send
      * ([AppEngine.setLocalPublishFallback]), false is what you receive
      * ([AppEngine.setRemoteSubscribeFallback]). `state` is the fallback now in
-     * effect; NONE means everything was restored. Unreleased.
+     * effect; NONE means everything was restored. Since 0.4.16.
      */
     open fun onFallbackStateChanged(isLocal: Boolean, state: AppFallbackOption) {}
     /**
      * The join token expires in about 30 seconds (read from the token itself).
      * Fetch a new one from your server and pass it to [AppEngine.renewToken].
-     * Unreleased.
+     * Since 0.4.16.
      */
     open fun onTokenWillExpire(token: String) {}
     /**
      * The cloud proxy state changed (see [AppEngineOptions.cloudProxy]).
      * [autoRetry] is true when the relay is used because the direct join
-     * failed. Unreleased.
+     * failed. Since 0.4.17.
      */
     open fun onProxyStateChanged(state: AppProxyState, autoRetry: Boolean) {}
 }

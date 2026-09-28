@@ -52,6 +52,7 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
     var joining by remember { mutableStateOf(false) }
     var mic by remember { mutableStateOf(true) }
     var cam by remember { mutableStateOf(true) }
+    var enhance by remember { mutableStateOf(false) }
     var speaker by remember { mutableStateOf(true) }
     var audioRoute by remember { mutableStateOf<AppAudioRoute?>(null) }
     var say by remember { mutableStateOf("") }
@@ -169,6 +170,7 @@ fun AppLoomaLiveStream(kit: AppLoomaKit, room: String, role: String? = null, onL
                     RoundBtn(if (mic) Icons.Rounded.Mic else Icons.Rounded.MicOff, { mic = !mic; engine.enableMicrophone(mic) }, off = !mic)
                     RoundBtn(if (cam) Icons.Rounded.Videocam else Icons.Rounded.VideocamOff, { cam = !cam; engine.enableCamera(cam) }, off = !cam)
                     RoundBtn(Icons.Rounded.Cameraswitch, { engine.switchCamera() })
+                    RoundBtn(Icons.Rounded.AutoFixHigh, { enhance = !enhance; engine.setVideoEnhance(if (enhance) AppVideoEnhance.Portrait else null) }, brand = enhance)
                 }
             }
             if (joined) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- uikit-android: an Enhance button (beauty + low light) in the live stream host controls, as in the call screen.
+- Docs: stale "Unreleased" notes in the rtc-android API docs now name the version that shipped each API (0.4.11 video modes and 4K, 0.4.16 encoder self-test, network test, fallbacks, token renewal, region and remote diagnostics, 0.4.17 cloud proxy, 0.4.18 Clear Voice, audience latency and codec detection); the Android reference page likewise (2160p since 0.4.11, view re-bind fixes since 0.4.13).
+- Sample apps (Java, Kotlin): the header shows the AppLooma brand mark instead of a letter.
+
 ## rtc-android 0.4.18 · uikit-android 0.2.11 — 2026-09-28
 
 - uikit-android 0.2.11: built on rtc-android 0.4.18; adds an Enhance button (beauty + low light) to the call controls.
