@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.18 · uikit-android 0.2.11 — 2026-09-28
 
+- uikit-android 0.2.11: built on rtc-android 0.4.18; adds an Enhance button (beauty + low light) to the call controls.
 - MediaTek/Codec2 hardware H.264 path available behind remote device config (off by default).
 - Video enhancement: `AppEngine.setVideoEnhance(AppVideoEnhance(beauty, lowLight, sharpen, warmth))` (null turns it off; `AppVideoEnhance.Portrait` preset). Edge-preserving skin smoothing, adaptive low-light boost, sharpening and warmth on the camera frames before encoding, on the CPU at half resolution with reused buffers. Runs before any `setVideoProcessor` processor. `AppVideoFilters` is public for use in your own processor. UIKit: an Enhance button (beauty + low light) in the call controls. Covered by unit tests.
 - Clear Voice: `AppAudioOptions.noiseSuppressionMode` (`AppNoiseSuppression.STANDARD` default, `CLEAR`, `OFF`) and `engine.setNoiseSuppressionMode(mode)` / `noiseSuppressionMode`. CLEAR adds a spectral noise suppressor (DSP, not a neural model; 10 ms latency) in the microphone post-processing. Unit tests: white noise down at least 6 dB, a 440 Hz tone within 3 dB.
