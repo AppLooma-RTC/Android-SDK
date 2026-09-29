@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## rtc-android 0.4.19 · uikit-android 0.2.13 — 2026-09-29
 
+- uikit-android 0.2.13: built on rtc-android 0.4.19. No UIKit API changes.
 - Cloud proxy auto-retry no longer reports a disconnect to the app while it switches to the relay.
 - Codec2 H.264: Baseline SPS rewritten to Constrained Baseline flags.
 
