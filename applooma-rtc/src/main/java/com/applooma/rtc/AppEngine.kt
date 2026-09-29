@@ -587,6 +587,9 @@ class AppEngine private constructor(
         },
     )
 
+    /** True only while the failed direct attempt is torn down before a proxy retry. */
+    @Volatile private var proxyRetrying = false
+
     private suspend fun connectWithProxy(wsUrl: String, token: String) {
         val mode = options.cloudProxy
         if (mode == AppCloudProxy.FORCE_TLS_443) {
@@ -601,7 +604,13 @@ class AppEngine private constructor(
             if (t is kotlinx.coroutines.CancellationException || !ProxyPolicy.shouldRetry(mode, t)) throw t
             debug("direct join failed (${t.javaClass.simpleName}: ${t.message}); retrying once through the cloud proxy on TLS 443")
             android.util.Log.w(TAG, "Direct connection failed; retrying through the AppLooma cloud proxy (TLS 443)")
-            try { room.disconnect() } catch (_: Throwable) {}
+            proxyRetrying = true
+            try {
+                try { room.disconnect() } catch (_: Throwable) {}
+                // The disconnect event is delivered asynchronously; let it drain
+                // while the flag still hides it from the app.
+                kotlinx.coroutines.delay(300)
+            } finally { proxyRetrying = false }
             setProxyState(AppProxyState.CONNECTING, true)
             try { room.connect(wsUrl, token, relayConnectOptions()) } catch (t2: Throwable) { setProxyState(AppProxyState.DIRECT, true); throw t2 }
             setProxyState(AppProxyState.CONNECTED, true)
@@ -1643,7 +1652,11 @@ class AppEngine private constructor(
                         seedExistingParticipants()
                         eventHandler?.onReconnected()
                     }
-                    is RoomEvent.Disconnected -> {
+                    is RoomEvent.Disconnected -> if (proxyRetrying) {
+                        // Our own teardown of the failed direct attempt before the
+                        // cloud-proxy retry; the app must not see a disconnect.
+                        debug("disconnect of the failed direct attempt ignored (retrying through the cloud proxy)")
+                    } else {
                         debug("disconnected reason=${event.reason?.name} error=${event.error}")
                         Diagnostics.endSession("disconnected")
                         isJoined = false

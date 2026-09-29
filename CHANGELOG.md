@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Cloud proxy auto-retry no longer reports a disconnect to the app while it switches to the relay.
+- Codec2 H.264: Baseline SPS rewritten to Constrained Baseline flags.
+
 ## rtc-android 0.4.18 · uikit-android 0.2.12 — 2026-09-28
 
 - uikit-android 0.2.12: an Enhance button (beauty + low light) in the live stream host controls, as in the call screen. rtc-android stays 0.4.18 (only doc comments changed).

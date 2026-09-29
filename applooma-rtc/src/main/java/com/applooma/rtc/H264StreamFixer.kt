@@ -50,12 +50,20 @@ internal class H264StreamFixer(private val onProfile: (Profile) -> Unit = {}) {
     val profile: Profile? get() = lastProfile
 
     fun process(au: ByteArray): Result {
-        val nals = split(au)
+        val nals = split(au).toMutableList()
         if (nals.isEmpty()) return Result(au, false, false)
         var hasIdr = false; var hasSps = false; var hasPps = false; var hasJunk = false
-        for (n in nals) when (type(n)) {
-            NAL_SPS -> { hasSps = true; sps = n; readProfile(n) }
-            NAL_PPS -> { hasPps = true; pps = n }
+        for ((i, raw) in nals.withIndex()) when (type(raw)) {
+            NAL_SPS -> {
+                // Some Codec2 encoders (MediaTek) emit plain Baseline 42001f even when
+                // asked for Constrained Baseline, while the call negotiated 42e01f.
+                // This encoder never uses the Baseline-only tools (no FMO/ASO/B-frames),
+                // so the stream already is Constrained Baseline: set the flags to match.
+                val n = constrainBaseline(raw)
+                if (n !== raw) { nals[i] = n; hasJunk = true }
+                hasSps = true; sps = n; readProfile(n)
+            }
+            NAL_PPS -> { hasPps = true; pps = raw }
             NAL_IDR -> hasIdr = true
             NAL_AUD, NAL_SEI -> hasJunk = true
         }
@@ -82,6 +90,17 @@ internal class H264StreamFixer(private val onProfile: (Profile) -> Unit = {}) {
     }
 
     companion object {
+        /** Returns an SPS with constraint_set0/1 flags set when it is Baseline without them; otherwise the same array. */
+        fun constrainBaseline(sps: ByteArray): ByteArray {
+            if (sps.size < 4 || type(sps) != NAL_SPS) return sps
+            val profileIdc = sps[1].toInt() and 0xFF
+            val flags = sps[2].toInt() and 0xFF
+            if (profileIdc != 66 || flags and 0x40 != 0) return sps
+            val copy = sps.copyOf()
+            copy[2] = (flags or 0xE0).toByte()
+            return copy
+        }
+
         const val NAL_IDR = 5
         const val NAL_SEI = 6
         const val NAL_SPS = 7
@@ -123,7 +142,7 @@ internal class H264StreamFixer(private val onProfile: (Profile) -> Unit = {}) {
         fun inspect(stream: ByteArray): Inspection {
             var s = false; var p = false; var idr = 0; var profile: Profile? = null
             for (n in split(stream)) when (type(n)) {
-                NAL_SPS -> { s = true; if (profile == null) profile = parseProfile(n) }
+                NAL_SPS -> { s = true; if (profile == null) profile = parseProfile(constrainBaseline(n)) }
                 NAL_PPS -> p = true
                 NAL_IDR -> idr++
             }
