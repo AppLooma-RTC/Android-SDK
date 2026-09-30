@@ -94,3 +94,36 @@ class CodecHealthTest {
         assertFalse(CodecHealth.isInternalTopic(null))
     }
 }
+
+class ViewerReportRuleTest {
+    @Test fun softwareSingleLayerNeverRepublishes() {
+        assertEquals(ViewerReportAction.IGNORE_ALREADY_SAFE, ViewerReportRule.decide(softwareEncoder = true, singleLayer = true, encoderProducing = false))
+        assertEquals(ViewerReportAction.IGNORE_ALREADY_SAFE, ViewerReportRule.decide(true, true, true))
+    }
+
+    @Test fun producingEncoderMeansViewerStall() {
+        assertEquals(ViewerReportAction.VIEWER_STALL, ViewerReportRule.decide(softwareEncoder = false, singleLayer = true, encoderProducing = true))
+        assertEquals(ViewerReportAction.VIEWER_STALL, ViewerReportRule.decide(true, false, true))
+    }
+
+    @Test fun silentEncoderCountsTowardsFallback() {
+        assertEquals(ViewerReportAction.COUNT, ViewerReportRule.decide(false, false, false))
+        assertEquals(ViewerReportAction.COUNT, ViewerReportRule.decide(true, false, false))
+    }
+
+    @Test fun watchdogTracksRecentProgress() {
+        val w = EncoderWatchdog().apply { reset(0) }
+        assertFalse(w.producedRecently(0))
+        w.onSample(EncoderSample(2_000, 30, 1, 30))
+        assertFalse(w.producedRecently(2_000)) // baseline only
+        w.onSample(EncoderSample(4_000, 60, 1, 60))
+        assertTrue(w.producedRecently(4_000))
+        assertTrue(w.producedRecently(10_000))
+        assertFalse(w.producedRecently(10_001))
+        // Encoded but nothing sent does not count as producing.
+        w.onSample(EncoderSample(12_000, 90, 1, 60))
+        assertFalse(w.producedRecently(12_000))
+        w.pause()
+        assertFalse(w.producedRecently(12_000))
+    }
+}

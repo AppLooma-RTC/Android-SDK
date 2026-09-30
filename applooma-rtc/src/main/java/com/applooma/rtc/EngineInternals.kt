@@ -6,6 +6,7 @@ import io.livekit.android.audio.AudioSwitchHandler
 import io.livekit.android.room.track.LocalVideoTrack
 import livekit.org.webrtc.JavaI420Buffer
 import livekit.org.webrtc.RtpSender
+import livekit.org.webrtc.RtpTransceiver
 import livekit.org.webrtc.VideoFrame
 import livekit.org.webrtc.VideoProcessor
 import livekit.org.webrtc.VideoSink
@@ -24,9 +25,36 @@ internal object TrackAccess {
     private val senderMethod by lazy {
         try { LocalVideoTrack::class.java.declaredMethods.firstOrNull { it.returnType == RtpSender::class.java && it.parameterTypes.isEmpty() }?.apply { isAccessible = true } } catch (_: Throwable) { null }
     }
+    private val transceiverField by lazy {
+        try { LocalVideoTrack::class.java.declaredFields.firstOrNull { it.type == RtpTransceiver::class.java }?.apply { isAccessible = true } } catch (_: Throwable) { null }
+    }
+    private val roomEngineField by lazy {
+        try { io.livekit.android.room.Room::class.java.declaredFields.firstOrNull { it.type == io.livekit.android.room.RTCEngine::class.java }?.apply { isAccessible = true } } catch (_: Throwable) { null }
+    }
 
     fun source(track: LocalVideoTrack): VideoSource? = try { sourceField?.get(track) as? VideoSource } catch (_: Throwable) { null }
-    fun sender(track: LocalVideoTrack): RtpSender? = try { senderMethod?.invoke(track) as? RtpSender } catch (_: Throwable) { null }
+
+    /**
+     * The track's RTP sender. In an app built with a code shrinker the
+     * engine's internal sender getter could be inlined away (the reason live
+     * bitrate changes were "not reachable" in production), so three routes
+     * are tried in order: that getter, the track's transceiver field, and the
+     * room's publisher connection, matched by track id. The route name
+     * (senderWithRoute) goes to the log.
+     */
+    fun sender(track: LocalVideoTrack, room: io.livekit.android.room.Room? = null): RtpSender? = senderWithRoute(track, room)?.first
+
+    fun senderWithRoute(track: LocalVideoTrack, room: io.livekit.android.room.Room?): Pair<RtpSender, String>? {
+        try { (senderMethod?.invoke(track) as? RtpSender)?.let { return it to "getter" } } catch (_: Throwable) {}
+        try { (transceiverField?.get(track) as? RtpTransceiver)?.sender?.let { return it to "transceiver" } } catch (_: Throwable) {}
+        if (room != null) try {
+            val id = track.rtcTrack.id()
+            val engine = roomEngineField?.get(room) as? io.livekit.android.room.RTCEngine
+            val pc = engine?.getPublisherPeerConnection()
+            pc?.senders?.firstOrNull { s -> try { s.track()?.id() == id } catch (_: Throwable) { false } }?.let { return it to "connection" }
+        } catch (_: Throwable) {}
+        return null
+    }
 }
 
 /** Bridges an [AppVideoProcessor] onto a capture source. One per source. */

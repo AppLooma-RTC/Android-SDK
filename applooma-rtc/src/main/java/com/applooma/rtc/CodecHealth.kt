@@ -18,6 +18,8 @@ internal object CodecHealth {
     const val REASON_NO_FRAMES = "no_frames"
     const val REASON_ENCODER_ERROR = "encoder_error"
     const val REASON_VIEWERS = "viewers_cannot_decode"
+    /** Device report outcome: viewers see no picture while our encoder is fine. */
+    const val OUTCOME_VIEWER_STALL = "viewer_stall"
 
     fun isInternalTopic(topic: String?): Boolean = topic != null && topic.startsWith(INTERNAL_TOPIC_PREFIX)
 }
@@ -43,6 +45,13 @@ internal class EncoderWatchdog(
     private var last: EncoderSample? = null
     private var unhealthySince = -1L
     private var tripped = false
+    /** When frames were last seen being encoded and sent, or -1. */
+    var lastProgressAt = -1L
+        private set
+
+    /** Whether frames were encoded and sent within [withinMs] of [nowMs]. */
+    fun producedRecently(nowMs: Long, withinMs: Long = 6_000): Boolean =
+        lastProgressAt >= 0 && nowMs - lastProgressAt <= withinMs
 
     /** The camera was (re)published or restarted: start over. */
     fun reset(nowMs: Long) {
@@ -50,19 +59,21 @@ internal class EncoderWatchdog(
         last = null
         unhealthySince = -1L
         tripped = false
+        lastProgressAt = -1L
     }
 
     /** Camera off or muted: nothing to judge; the clock restarts when it is back. */
-    fun pause() { startedAt = -1L; last = null; unhealthySince = -1L }
+    fun pause() { startedAt = -1L; last = null; unhealthySince = -1L; lastProgressAt = -1L }
 
     /**
      * Feed one sample. Returns [CodecHealth.REASON_NO_FRAMES] exactly once
      * when the encoder has been unhealthy for longer than [unhealthyMs], else null.
      */
     fun onSample(s: EncoderSample): String? {
-        if (tripped) return null
-        if (startedAt < 0) startedAt = s.atMs
         val prev = last
+        if (prev != null && s.framesEncoded > prev.framesEncoded && s.framesSent > prev.framesSent) lastProgressAt = s.atMs
+        if (tripped) { last = s; return null }
+        if (startedAt < 0) startedAt = s.atMs
         last = s
         val progressing = prev == null ||
             s.framesEncoded > prev.framesEncoded || s.framesSent > prev.framesSent
@@ -99,6 +110,24 @@ internal class ViewerReports(
         reports.entries.removeAll { nowMs - it.value > windowMs }
         if (otherParticipants <= 1) return true
         return reports.size >= needed
+    }
+}
+
+/** What to do with a viewer's "no picture" report. */
+internal enum class ViewerReportAction {
+    /** Already on the safe path (software, one layer): a republish cannot help. */
+    IGNORE_ALREADY_SAFE,
+    /** Our encoder is producing and sending frames: the problem is on the network or the viewer's side. */
+    VIEWER_STALL,
+    /** Count it towards a fallback. */
+    COUNT,
+}
+
+internal object ViewerReportRule {
+    fun decide(softwareEncoder: Boolean, singleLayer: Boolean, encoderProducing: Boolean): ViewerReportAction = when {
+        softwareEncoder && singleLayer -> ViewerReportAction.IGNORE_ALREADY_SAFE
+        encoderProducing -> ViewerReportAction.VIEWER_STALL
+        else -> ViewerReportAction.COUNT
     }
 }
 

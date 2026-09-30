@@ -1,5 +1,13 @@
 # Changelog
 
+## rtc-android 0.4.20 · uikit-android 0.2.14 — 2026-09-30
+
+- rtc-android 0.4.20: the encoded camera picture never exceeds the video tier. When the camera delivers a larger frame than the tier asks for (960x720 for a 540p tier), the sender scales it down instead of encoding the full frame.
+- Live bitrate changes from `setVideoConfig` apply again in apps built with a code shrinker: the SDK now reaches the camera's sender by three routes and ships keep rules for them. Previously every change logged "encoder parameters not reachable".
+- Codec recovery no longer republishes the camera on a viewer's "no picture" report when the stream is already software and single layer, or when the local encoder is producing and sending frames. The report is logged and sent as a `viewer_stall` device report instead; a republish blacked out every viewer and could not help.
+- Weak phones: a phone with at most 4 cores, a low-RAM flag or a small memory class starts at 540p20 on a software encoder. On any phone, a software encoder below 12 fps for 10 s steps down one tier (540p, then 360p, at 20 fps) without a republish; it may step back up once after 60 s of steady frame rate. Each step is logged and reported through `onVideoQualityChanged` with reason `CPU`.
+- Two engines at once (PK): a second engine does not open the camera while another engine in the app publishes it. SDK log lines from an engine carry its number (`e1`, `e2`).
+
 ## rtc-android 0.4.19 · uikit-android 0.2.13 — 2026-09-29
 
 - uikit-android 0.2.13: built on rtc-android 0.4.19. No UIKit API changes.

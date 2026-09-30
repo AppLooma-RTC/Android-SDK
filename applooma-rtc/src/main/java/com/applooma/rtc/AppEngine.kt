@@ -162,6 +162,27 @@ class AppEngine private constructor(
 
     init { configureAudioRouting() }
 
+    /** Numbers this engine in the log, so two engines (a PK battle) can be told apart. */
+    private val engineNo: Int = nextEngineNo.incrementAndGet().also { synchronized(liveEngines) { liveEngines[this] = true } }
+
+    /** A log line from this engine, tagged with its number. */
+    private fun log(line: String) = debug("e$engineNo $line")
+
+    /** Another joined engine in this process already publishing the camera, or null. */
+    private fun cameraOwner(): AppEngine? = synchronized(liveEngines) { liveEngines.keys.toList() }
+        .firstOrNull { it !== this && it.isJoined && it.localVideoTrack != null }
+
+    /**
+     * One camera, one encoder: a second engine (the other side of a PK battle)
+     * must not open the camera again while the first publishes it; on low-end
+     * phones that stops the first capture or doubles the encoder load.
+     */
+    private fun cameraAllowed(): Boolean {
+        val owner = cameraOwner() ?: return true
+        log("camera is already published by engine e${owner.engineNo}; this engine does not start a second capture")
+        return false
+    }
+
     /**
      * Tell the engine's device switcher what to pick when nothing was chosen by
      * hand: a Bluetooth headset first, then a wired one, then the loudspeaker
@@ -235,6 +256,30 @@ class AppEngine private constructor(
                 val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime) != null
                 AppVideoCodecCapability(mime = name, hardware = hw, encoder = hw || software, decoder = software || hasDecoder(mime))
             }
+        }
+
+        private val nextEngineNo = java.util.concurrent.atomic.AtomicInteger(0)
+        private val liveEngines = java.util.WeakHashMap<AppEngine, Boolean>()
+
+        /**
+         * Weak phone (at most 4 cores, a low-RAM device, or a small app memory
+         * class). Set on the first [create]. Such a phone on a software encoder
+         * starts at 540p20 in STABLE_HD instead of 720p.
+         */
+        @Volatile internal var weakDevice = false
+        @Volatile private var weakDeviceChecked = false
+
+        private fun checkWeakDevice(context: Context) {
+            if (weakDeviceChecked) return
+            weakDeviceChecked = true
+            try {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                val cores = Runtime.getRuntime().availableProcessors()
+                val lowRam = am?.isLowRamDevice ?: false
+                val memClass = am?.memoryClass ?: 0
+                weakDevice = WeakDevice.isWeak(cores, lowRam, memClass)
+                if (weakDevice) debug("weak device: cores=$cores lowRam=$lowRam memoryClass=${memClass}MB; software video starts at 540p20")
+            } catch (_: Throwable) {}
         }
 
         @Volatile private var debugSink: ((String) -> Unit)? = null
@@ -395,7 +440,7 @@ class AppEngine private constructor(
                 AppVideoMode.STABLE_HD -> if (hardwareTier) 1080 else 720
                 AppVideoMode.ADAPTIVE -> 1080
             }
-            val height = if (c.height > 0) snapHeight(c.height) else tierHeight
+            var height = if (c.height > 0) snapHeight(c.height) else tierHeight
             if (c.height > 0 && height != c.height) android.util.Log.w(TAG, "AppVideoConfig.height=${c.height} is not a preset; using ${height}p")
             val maxBitrate = when {
                 c.maxBitrate > 0 -> c.maxBitrate
@@ -410,7 +455,12 @@ class AppEngine private constructor(
             // side: measured on realme RMX3941 the frame rate swung 2-28 fps
             // under CPU limit. A steady 20 fps looks far smoother. Only the
             // default fps is capped; an app that asks for another value keeps it.
-            val fps = if (mode == AppVideoMode.STABLE_HD && !hardwareTier && c.height <= 0 && c.fps == 30) 20 else c.fps
+            var fps = if (mode == AppVideoMode.STABLE_HD && !hardwareTier && c.height <= 0 && c.fps == 30) 20 else c.fps
+            // A weak phone on a software encoder: 540p20 unless the app chose a size.
+            if (weakDevice && !hardwareTier && c.height <= 0 && mode != AppVideoMode.ULTRA_HD_4K && height > 540) {
+                height = 540
+                fps = minOf(fps, 20)
+            }
             // Per-device caps from the server (DeviceTelemetry): only ever lower.
             val capped = DeviceCaps.apply(DeviceCaps.Caps(height, fps, maxBitrate, simulcast), DeviceTelemetry.current)
             return ResolvedVideo(mode, capped.height, capped.fps, capped.maxBitrate, capped.simulcast, degradation)
@@ -477,6 +527,7 @@ class AppEngine private constructor(
         fun create(context: Context, appId: String, eventHandler: AppEventHandler? = null, options: AppEngineOptions = AppEngineOptions()): AppEngine {
             require(appId.isNotBlank()) { "AppEngine.create: appId is required" }
             CodecMemory.apply(context)
+            checkWeakDevice(context.applicationContext)
             DeviceTelemetry.region = options.region.code
             DeviceTelemetry.load(context)
             if (options.experimentalH264Codec2) AppLoomaVideoEncoderFactory.experimentalH264Codec2 = true
@@ -560,7 +611,7 @@ class AppEngine private constructor(
         applyAudienceLatency(lastRole == AppRole.AUDIENCE || lastCanPublish == false)
         if (options.role != AppRole.AUDIENCE) {
             if (options.microphone) room.localParticipant.setMicrophoneEnabled(true)
-            if (options.camera) room.localParticipant.setCameraEnabled(true)
+            if (options.camera && cameraAllowed()) room.localParticipant.setCameraEnabled(true)
         }
     }
 
@@ -655,7 +706,10 @@ class AppEngine private constructor(
     // Fire-and-forget for Java callers, so a failure (missing CAMERA
     // permission, publish rejected) is reported rather than thrown from a
     // coroutine, where it would crash the host application.
-    fun enableCamera(on: Boolean) = launchSafely { localFallbackMuted = false; room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged() }
+    fun enableCamera(on: Boolean) = launchSafely {
+        if (on && localVideoTrack == null && !cameraAllowed()) return@launchSafely
+        localFallbackMuted = false; room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged()
+    }
     /**
      * Turn your microphone on or off. Music is independent of it: while a
      * song is playing, muting sends silence in place of your voice but keeps
@@ -775,13 +829,14 @@ class AppEngine private constructor(
         val republish = now.simulcast != was.simulcast || resolveCodec(config.codec) != resolveCodec(previous.codec)
         val resize = now.height != was.height || now.fps != was.fps
         val encoderOnly = now.maxBitrate != was.maxBitrate || now.degradation != was.degradation
-        debug("setVideoConfig ${was.height}p${was.fps}/${was.maxBitrate / 1000}kbps -> ${now.height}p${now.fps}/${now.maxBitrate / 1000}kbps republish=$republish resize=$resize encoder=$encoderOnly")
+        videoLoadReset()
+        log("setVideoConfig ${was.height}p${was.fps}/${was.maxBitrate / 1000}kbps -> ${now.height}p${now.fps}/${now.maxBitrate / 1000}kbps republish=$republish resize=$resize encoder=$encoderOnly")
         if (republish) {
             republishCamera(track)
         } else {
             if (resize) track.restartTrack(track.options.copy(captureParams = ro.videoTrackCaptureDefaults!!.captureParams))
             if (encoderOnly && !applyEncoderParams(track, was.maxBitrate, now.maxBitrate, now.degradation)) {
-                debug("encoder parameters not reachable; bitrate applies at the next publish")
+                log("encoder parameters not reachable; bitrate applies at the next publish")
             }
         }
         notifyLocalVideoChanged()
@@ -830,6 +885,7 @@ class AppEngine private constructor(
         fallbackGate.reset(); viewerReports.clear(); encoderWatchdog.pause(); watchedRtc = null
         noFrameSince.clear(); lastReportSent.clear(); remoteCodec.clear()
         reportedOutcomes.clear(); healthySince = -1L
+        videoLoadReset()
     }
 
     /* Anonymous device reports (DeviceTelemetry): at most one per outcome and codec per join. */
@@ -889,7 +945,7 @@ class AppEngine private constructor(
             return
         }
         healthySince = -1L
-        debug("video encoder unhealthy: frames=${sample.framesEncoded} keyFrames=${sample.keyFramesEncoded} sent=${sample.framesSent}")
+        log("video encoder unhealthy: frames=${sample.framesEncoded} keyFrames=${sample.keyFramesEncoded} sent=${sample.framesSent}")
         fallBack(reason)
     }
 
@@ -900,11 +956,17 @@ class AppEngine private constructor(
      */
     private fun fallBack(reason: String) = launchSafely {
         val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
-        if (!fallbackGate.tryAcquire()) { debug("codec recovery already used in this session; $reason ignored"); return@launchSafely }
+        if (!fallbackGate.tryAcquire()) { log("codec recovery already used in this session; $reason ignored"); return@launchSafely }
         val codec = currentCodec
         val mime = mimeOfCodec(codec)
         val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime)
         val from = "$codec:${if (hw != null) "hw" else "sw"}"
+        if (hw == null && !resolveVideo(videoConfig).simulcast && reason == CodecHealth.REASON_VIEWERS) {
+            // Already software and one layer: a republish would only black out every viewer.
+            fallbackGate.reset()
+            log("codec recovery: $from single layer is already the safe path; $reason does not republish")
+            return@launchSafely
+        }
         val to: String
         if (hw != null) {
             CodecMemory.rememberBad(appContext, mime, hw.name)
@@ -915,7 +977,7 @@ class AppEngine private constructor(
             videoConfig = videoConfig.copy(simulcast = false)
             to = "$from:single"
         }
-        debug("codec recovery: $from -> $to reason=$reason")
+        log("codec recovery: $from -> $to reason=$reason")
         Diagnostics.problem(DiagPolicy.PROBLEM_FALLBACK)
         reportDevice("fallback", codec, hw?.name, fromCodec = codec, toCodec = if (hw != null) "vp8" else codec)
         val ro = roomOptions(options.copy(video = videoConfig))
@@ -965,17 +1027,28 @@ class AppEngine private constructor(
         if (msg.optString("t") != CodecHealth.REASON_NO_FRAMES) return
         if (localVideoTrack == null) return
         val viewer = from.identity?.value ?: return
-        debug("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")})")
+        val now = System.currentTimeMillis()
+        val codec = currentCodec
+        val software = AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(codec)) == null
+        val single = !resolveVideo(videoConfig).simulcast
+        val producing = encoderWatchdog.producedRecently(now)
+        val action = ViewerReportRule.decide(software, single, producing)
+        log("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")}) encoder=${if (software) "sw" else "hw"} single=$single producing=$producing -> $action")
         Diagnostics.problem(DiagPolicy.PROBLEM_NO_FRAMES)
-        currentCodec.let { reportDevice(CodecHealth.REASON_VIEWERS, it, encoderNameFor(it)) }
-        if (viewerReports.onReport(System.currentTimeMillis(), viewer, room.remoteParticipants.size)) {
+        if (action != ViewerReportAction.COUNT) {
+            // Our encoder is fine, or already on the safest path: network or viewer side. No republish.
+            reportDevice(CodecHealth.OUTCOME_VIEWER_STALL, codec, encoderNameFor(codec))
+            return
+        }
+        reportDevice(CodecHealth.REASON_VIEWERS, codec, encoderNameFor(codec))
+        if (viewerReports.onReport(now, viewer, room.remoteParticipants.size)) {
             fallBack(CodecHealth.REASON_VIEWERS)
         }
     }
 
     /** Bitrate / degradation straight on the sender: no republish, no renegotiation. */
     private fun applyEncoderParams(track: io.livekit.android.room.track.LocalVideoTrack, oldMax: Int, newMax: Int, degradation: AppVideoDegradation): Boolean {
-        val sender = TrackAccess.sender(track) ?: return false
+        val (sender, route) = TrackAccess.senderWithRoute(track, room) ?: return false
         return try {
             val params = sender.parameters
             val single = params.encodings.size <= 1
@@ -985,9 +1058,83 @@ class AppEngine private constructor(
             }
             degradationOf(degradation)?.let { params.degradationPreference = it }
             val ok = sender.setParameters(params)
-            debug("encoder params max=${newMax / 1000}kbps layers=${params.encodings.size} degradation=$degradation ok=$ok")
+            log("encoder params max=${newMax / 1000}kbps layers=${params.encodings.size} degradation=$degradation via=$route ok=$ok")
             ok
-        } catch (t: Throwable) { debug("encoder params failed: $t"); false }
+        } catch (t: Throwable) { log("encoder params failed: $t"); false }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Encode load: resolution cap and CPU tier                            */
+    /* ------------------------------------------------------------------ */
+
+    private var cpuTier: CpuTierController? = null
+    private var cpuTierBase = -1
+    private var loadCooldownUntil = 0L
+    private var loadFpsCap: Int? = null
+
+    private fun videoLoadReset() { cpuTier = null; cpuTierBase = -1; loadCooldownUntil = 0L; loadFpsCap = null }
+
+    /**
+     * Each stats tick while the camera publishes. Keeps the encoded top layer
+     * at or below the tier (the camera may deliver a larger frame than asked
+     * for; it is scaled down on the sender), and steps a software encoder that
+     * cannot hold 12 fps down to a smaller tier. No camera restart, no republish.
+     */
+    private fun manageVideoLoad(report: livekit.org.webrtc.RTCStatsReport?) {
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return
+        val video = report?.statsMap?.values
+            ?.filter { it.type == "outbound-rtp" && (it.members["kind"] ?: it.members["mediaType"]) == "video" }
+            ?: return
+        val top = video.filter { ((it.members["framesPerSecond"] as? Number)?.toDouble() ?: 0.0) > 0 && ((it.members["frameHeight"] as? Number)?.toInt() ?: 0) > 0 }
+            .maxByOrNull { (it.members["frameHeight"] as? Number)?.toInt() ?: 0 } ?: return
+        val m = top.members
+        val w = (m["frameWidth"] as? Number)?.toInt() ?: 0
+        val h = (m["frameHeight"] as? Number)?.toInt() ?: 0
+        val fps = ((m["framesPerSecond"] as? Number)?.toDouble() ?: 0.0).toInt()
+        val limitation = m["qualityLimitationReason"] as? String ?: "none"
+        val now = System.currentTimeMillis()
+        val v = resolveVideo(videoConfig)
+        if (cpuTier == null || cpuTierBase != v.height) { cpuTier = CpuTierController(CpuTierController.ladderFrom(v.height)); cpuTierBase = v.height }
+        val tier = cpuTier!!
+        val software = AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(currentCodec)) == null
+        if (software) {
+            val oldHeight = tier.height
+            val changed = tier.onSample(now, fps, limitation == "cpu")
+            if (changed != null) {
+                val newFps = if (changed > 0) minOf(v.fps, 20) else v.fps
+                loadFpsCap = if (changed > 0) newFps else null
+                log("video load: software encoder ${fps}fps limit=$limitation; tier ${oldHeight}p -> ${tier.height}p$newFps")
+                loadCooldownUntil = 0L
+                val short = tier.height
+                val (qw, qh) = if (w <= h) short to (h.toLong() * short / maxOf(1, w)).toInt() else (w.toLong() * short / maxOf(1, h)).toInt() to short
+                eventHandler?.onVideoQualityChanged(AppVideoQualityInfo(qw, qh, newFps, lastQuality?.bitrateKbps ?: 0, AppVideoLayer.HIGH, AppVideoQualityReason.CPU))
+            }
+        }
+        if (now < loadCooldownUntil) return
+        val (sender, route) = TrackAccess.senderWithRoute(track, room) ?: return
+        try {
+            val params = sender.parameters
+            val encodings = params.encodings
+            if (encodings.isEmpty()) return
+            val rid = m["rid"] as? String
+            val enc = encodings.firstOrNull { rid != null && it.rid == rid } ?: encodings.takeIf { it.size == 1 }?.first() ?: return
+            val topScale = encodings.minOf { it.scaleResolutionDownBy ?: 1.0 }
+            val encScale = enc.scaleResolutionDownBy ?: 1.0
+            if (kotlin.math.abs(encScale - topScale) > 0.01) return // only the top layer is judged
+            val target = tier.height
+            val newScale = ResolutionCap.scaleFor(minOf(w, h), encScale, target, limited = limitation != "none")
+            val wantFps = loadFpsCap ?: v.fps
+            val fpsChange = encodings.any { it.maxFramerate != wantFps }
+            if (newScale == null && !fpsChange) return
+            val factor = (newScale ?: encScale) / encScale
+            encodings.forEach { e ->
+                e.scaleResolutionDownBy = (e.scaleResolutionDownBy ?: 1.0) * factor
+                e.maxFramerate = wantFps
+            }
+            val ok = sender.setParameters(params)
+            loadCooldownUntil = now + 6_000
+            log("video cap: encoded ${w}x$h tier=${target}p scale=${"%.2f".format(encScale)}->${"%.2f".format(newScale ?: encScale)} fps=$wantFps via=$route ok=$ok")
+        } catch (t: Throwable) { log("video cap failed: $t"); loadCooldownUntil = now + 30_000 }
     }
 
     /**
@@ -1479,7 +1626,7 @@ class AppEngine private constructor(
                     eventHandler?.onStats(stats)
                     if (now - lastDiagStatsAt >= 10_000) {
                         lastDiagStatsAt = now
-                        debug("stats rtt=${stats.rttMs}ms up=${stats.uploadBitrate / 1000}kbps down=${stats.downloadBitrate / 1000}kbps lossUp=${(stats.uploadLoss * 100).toInt()}% lossDown=${(stats.downloadLoss * 100).toInt()}% quality=${stats.quality} remotes=${room.remoteParticipants.size}")
+                        log("stats rtt=${stats.rttMs}ms up=${stats.uploadBitrate / 1000}kbps down=${stats.downloadBitrate / 1000}kbps lossUp=${(stats.uploadLoss * 100).toInt()}% lossDown=${(stats.downloadLoss * 100).toInt()}% quality=${stats.quality} remotes=${room.remoteParticipants.size}")
                     }
                     applyFallbacks(stats)
                     // What our own camera is sending: the top simulcast layer
@@ -1494,6 +1641,7 @@ class AppEngine private constructor(
                     watchStalls(remote)
                     reportUndecodableVideo(remote)
                     watchLocalEncoder(reports[0])
+                    if (localVideoTrack != null) manageVideoLoad(reports[0])
                 } catch (_: Throwable) { /* stats are best effort */ }
             }
         }
@@ -1539,7 +1687,7 @@ class AppEngine private constructor(
         if (prev == null) return // the first sample is the baseline, not a change
         val same = prev.width == q.width && prev.height == q.height && prev.layer == q.layer && prev.reason == q.reason && kotlin.math.abs(prev.fps - q.fps) < 5
         if (!same) {
-            debug("video out ${q.width}x${q.height} ${q.fps}fps ${q.bitrateKbps}kbps layer=${q.layer} limit=${q.reason} uplinkEstimate=${lastAvailableOutKbps}kbps")
+            log("video out ${q.width}x${q.height} ${q.fps}fps ${q.bitrateKbps}kbps layer=${q.layer} limit=${q.reason} uplinkEstimate=${lastAvailableOutKbps}kbps")
             eventHandler?.onVideoQualityChanged(q)
         }
     }
