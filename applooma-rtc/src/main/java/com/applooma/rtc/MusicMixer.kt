@@ -131,6 +131,8 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
         originalBuffer: ByteBuffer, audioFormat: Int, channelCount: Int, sampleRate: Int, bytesRead: Int, captureTimeNs: Long,
     ): BufferResponse? {
         lastCallbackNs.set(System.nanoTime())
+        CaptureProbes.raw.feed(originalBuffer, sampleRate, channelCount, bytesRead)
+        AudioDump.raw(originalBuffer, sampleRate, channelCount, bytesRead)
         if (targetRate != sampleRate || targetChannels != channelCount) {
             targetRate = sampleRate; targetChannels = channelCount
             synchronized(lock) { readPos = 0; writePos = 0; stored = 0 }
@@ -328,7 +330,10 @@ internal class MusicMixer(private val listener: Listener) : MixerAudioBufferCall
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(targetRate).setChannelMask(channelMask).build())
                 .setBufferSizeInBytes(max(minBuf, targetRate * targetChannels * 2 / 5))
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .build().also { it.play(); playout = it }
+                .build().also {
+                    it.play(); playout = it
+                    AppEngine.debug("music monitor track rate=${it.sampleRate} channels=${it.channelCount} usage=$playoutUsage")
+                }
         } catch (t: Throwable) { listener.onMusicError(t); null }
     }
 

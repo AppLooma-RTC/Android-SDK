@@ -1,5 +1,18 @@
 # Changelog
 
+## rtc-android 0.4.21 · uikit-android 0.2.15 — 2026-10-03
+
+- uikit-android 0.2.15: built on rtc-android 0.4.21. No UIKit API changes.
+- Audio quality profiles: `AppAudioOptions.profile` with `AppAudioProfile.SPEECH`, `HD_VOICE` (default) and `MUSIC`. Set at create time; combines with `AppAudioScenario`.
+  - HD_VOICE: 48 kHz voice capture with the phone's own echo canceller and noise suppressor plus the engine's echo cancelling, noise suppression and AGC, call audio mode, high-pass filter, mono Opus 64 kbps (was 32 kbps), RED on, 48 kHz playout. Tuned by listening tests against other live apps on MediaTek and vivo phones.
+  - SPEECH: phone-like 1-to-1 calls, mono 32 kbps. With the CALL scenario the call starts on the earpiece.
+  - MUSIC: 48 kHz stereo capture where the phone supports it, all processing off, 128 kbps, media audio mode. Use with headphones.
+  - The log shows the profile in force at join (`audio profile=HD_VOICE source=voice in=48000 out=48000 aec=on+hw ns=on hwns=on agc=on mode=call bitrate=64k ...`).
+- Video: `AppVideoMode.STABLE_HD` now degrades BALANCED by default (was KEEP_RESOLUTION). Holding 720p while the bandwidth estimate ramped up left live streams at 6-13 fps for their first 10-20 s; now the picture stays smooth (measured 29 fps within 8 s on realme RMX3941) and grows to full size as bandwidth allows. ULTRA_HD_4K still keeps resolution; an explicit `degradation` is honoured.
+- Switching to the back camera no longer shows a mirrored picture for a few seconds.
+- A publisher connection that fails right after join is retried through the relay instead of leaving the host without video.
+- Diagnostics: one `mic probe` log line per session reports the capture rate and how much of the voice band arrives.
+
 ## rtc-android 0.4.20 · uikit-android 0.2.14 — 2026-09-30
 
 - rtc-android 0.4.20: the encoded camera picture never exceeds the video tier. When the camera delivers a larger frame than the tier asks for (960x720 for a 540p tier), the sender scales it down instead of encoding the full frame.

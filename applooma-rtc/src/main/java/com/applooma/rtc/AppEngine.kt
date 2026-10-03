@@ -106,7 +106,9 @@ class AppEngine private constructor(
 
     // Post-processing chain: residual-noise gate, target-level AGC, gain, limiter
     // (see AppAudioOptions.micGain / noiseSuppressionLevel / agcTargetLevelDbfs).
-    private val micGain = MicProcessor(options.audio.micGain, options.audio.noiseSuppressionLevel.thresholdDbfs, options.audio.agcTargetLevelDbfs)
+    private val profileSettings = AudioProfileSettings.resolve(options.audio.profile, options.audio, options.audioScenario, MicCapture.style())
+    private val micGain = MicProcessor(options.audio.micGain, options.audio.noiseSuppressionLevel.thresholdDbfs, options.audio.agcTargetLevelDbfs,
+        profileSettings.fixedGain, profileSettings.limiterCeiling)
         .also { it.clearVoice = options.audio.effectiveNoiseSuppression == AppNoiseSuppression.CLEAR }
 
     /**
@@ -135,32 +137,40 @@ class AppEngine private constructor(
                 // mode so the phone's echo canceller is engaged. Plain media
                 // mode leaves the canceller off, and a loudspeaker session then
                 // feeds itself back after a minute or two.
-                audioOutputType = if (audioScenario == AppAudioScenario.MEDIA) AudioType.CustomAudioType(
-                    AudioManager.MODE_IN_COMMUNICATION,
+                // The MUSIC profile runs in plain media mode (no communication
+                // mode, no platform voice processing); it is meant for headphones.
+                audioOutputType = if (profileSettings.normalMode || audioScenario == AppAudioScenario.MEDIA) AudioType.CustomAudioType(
+                    if (profileSettings.normalMode) AudioManager.MODE_NORMAL else MicCapture.mediaMode(),
                     AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build(),
                     AudioManager.STREAM_MUSIC,
                 ) else AudioType.CallAudioType(),
                 // One device switcher shared by every engine in the process (see SharedAudio).
-                audioHandler = SharedAudio.handlerFor(context, this, audioScenario),
+                audioHandler = SharedAudio.handlerFor(context, this, audioScenario, profileSettings),
                 javaAudioDeviceModuleCustomizer = { builder ->
-                    val hardware = options.audio.preferHardwareEffects && !options.softwareEchoCancellation
+                    val hardware = (options.audio.preferHardwareEffects || profileSettings.hardwareAec || profileSettings.hardwareNs) && !options.softwareEchoCancellation
                     // The platform canceller references everything the phone
                     // plays (in-room music included); WebRTC's software AEC
                     // only knows its own render path. Use the phone's when it
                     // has one, with the software stages still behind it.
-                    builder.setUseHardwareAcousticEchoCanceler(hardware && options.audio.echoCancellation)
-                    builder.setUseHardwareNoiseSuppressor(hardware && options.audio.noiseSuppression)
+                    builder.setUseHardwareAcousticEchoCanceler(hardware && profileSettings.hardwareAec)
+                    builder.setUseHardwareNoiseSuppressor(hardware && profileSettings.hardwareNs)
+                    MicCapture.apply(builder, profileSettings)
                     // One hook serves music mixing and the (pre-processing) recording gain.
                     builder.setAudioBufferCallback(AudioBufferCallbackDispatcher().also { it.bufferCallback = mixer })
                 },
                 audioProcessorOptions = AudioProcessorOptions(capturePostProcessor = micGain),
+                // The engine's call-mode keep-alive plays a silent 16 kHz voice
+                // track whenever playout is stopped. Harmless, but it is the
+                // 16 kHz track seen in audio dumps. Test-only switch to compare:
+                //   adb shell setprop debug.applooma.commkeepalive 0
+                disableCommunicationModeWorkaround = !MicCapture.flag("commkeepalive", true),
             ),
         ),
-    ).also { mixer.playoutUsage = if (audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
+    ).also { mixer.playoutUsage = if (profileSettings.normalMode || audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
     private val appContext: Context = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    init { configureAudioRouting() }
+    init { configureAudioRouting(); AudioDump.dir = context.applicationContext.filesDir }
 
     /** Numbers this engine in the log, so two engines (a PK battle) can be told apart. */
     private val engineNo: Int = nextEngineNo.incrementAndGet().also { synchronized(liveEngines) { liveEngines[this] = true } }
@@ -226,7 +236,7 @@ class AppEngine private constructor(
     private var lastCanPublish: Boolean? = null
     private var playbackVolume = 100
     private var videoConfig: AppVideoConfig = options.video
-    private var noiseSuppression = options.audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF
+    private var noiseSuppression = profileSettings.noiseSuppression
 
     @Volatile
     var isJoined: Boolean = false
@@ -449,7 +459,14 @@ class AppEngine private constructor(
                 else -> when (height) { 1440 -> 5_000_000; 1080 -> 4_000_000; 720 -> 2_200_000; else -> presetOf(height).encoding.maxBitrate }
             }
             val simulcast = c.simulcast ?: (mode == AppVideoMode.ADAPTIVE)
-            val degradation = if (c.degradation == AppVideoDegradation.AUTO && mode != AppVideoMode.ADAPTIVE) AppVideoDegradation.KEEP_RESOLUTION else c.degradation
+            // STABLE_HD gives up a little resolution and a little frame rate while the
+            // bandwidth estimate ramps up: holding 720p from the first second left
+            // live streams at 6-13 fps for their first 10-20 s (realme RMX3941).
+            val degradation = if (c.degradation != AppVideoDegradation.AUTO) c.degradation else when (mode) {
+                AppVideoMode.ULTRA_HD_4K -> AppVideoDegradation.KEEP_RESOLUTION
+                AppVideoMode.STABLE_HD -> AppVideoDegradation.BALANCED
+                AppVideoMode.ADAPTIVE -> AppVideoDegradation.AUTO
+            }
             // Software-encoder phones (no usable hardware encoder, e.g. MediaTek
             // today) cannot hold 720p at 30 fps while also decoding the other
             // side: measured on realme RMX3941 the frame rate swung 2-28 fps
@@ -475,6 +492,7 @@ class AppEngine private constructor(
         }
 
         private fun roomOptions(o: AppEngineOptions): RoomOptions {
+            val ap = AudioProfileSettings.resolve(o.audio.profile, o.audio, o.audioScenario, MicCapture.style())
             val v = resolveVideo(o.video)
             // 2160p has no engine preset; capture at 3840x2160 directly.
             // Capture at the resolved frame rate too, so a 20 fps tier does not pay
@@ -513,11 +531,13 @@ class AppEngine private constructor(
                     degradationPreference = degradationOf(v.degradation),
                 ),
                 audioTrackCaptureDefaults = LocalAudioTrackOptions(
-                    noiseSuppression = o.audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF,
-                    echoCancellation = o.audio.echoCancellation,
-                    autoGainControl = o.audio.autoGainControl,
+                    noiseSuppression = MicCapture.flag("ns", ap.noiseSuppression),
+                    echoCancellation = MicCapture.flag("aec", ap.echoCancellation),
+                    autoGainControl = MicCapture.flag("agc", ap.autoGainControl),
+                    highPassFilter = MicCapture.flag("hpf", ap.highPassFilter),
+                    typingNoiseDetection = false,
                 ),
-                audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = 96_000, dtx = false, red = true),
+                audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = ap.bitrate, dtx = ap.dtx, red = ap.red),
             )
         }
 
@@ -572,6 +592,8 @@ class AppEngine private constructor(
         firstFrameSeen.clear()
         resetCodecRecovery()
         joinToken = token
+        joinWsUrl = wsUrl
+        publisherRelayTried = false
         Diagnostics.beginSession(appContext, token)
         armTokenTimer(token)
         // Device tuning: this join uses the cached answer (already in the room
@@ -581,7 +603,9 @@ class AppEngine private constructor(
         subscribeEvents()
         // Auto-subscribe so an audience member (and every co-host) receives all
         // published tracks the moment they join — no manual per-track subscribe.
+        log(profileSettings.logLine())
         debug("joinChannel region=${this.options.region.code} role=${options.role} camera=${options.camera} mic=${options.microphone} sdk=${BuildConfig.SDK_VERSION} device=${Build.MANUFACTURER} ${Build.MODEL} api=${Build.VERSION.SDK_INT}")
+        if (options.microphone) CaptureProbes.start()
         publishedCodec.let { debug("video codec=$it ${AppLoomaVideoEncoderFactory.describe(it)}") }
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
@@ -612,6 +636,7 @@ class AppEngine private constructor(
         if (options.role != AppRole.AUDIENCE) {
             if (options.microphone) room.localParticipant.setMicrophoneEnabled(true)
             if (options.camera && cameraAllowed()) room.localParticipant.setCameraEnabled(true)
+            probePublisher()
         }
     }
 
@@ -640,6 +665,95 @@ class AppEngine private constructor(
 
     /** True only while the failed direct attempt is torn down before a proxy retry. */
     @Volatile private var proxyRetrying = false
+
+    @Volatile private var joinWsUrl: String? = null
+    /** The once-per-join relay retry after a failed publisher connection has been used. */
+    @Volatile private var publisherRelayTried = false
+
+    /**
+     * The upstream (publish) connection is set up lazily and can fail on its own
+     * after the join succeeded, e.g. a network that lets the join through but
+     * blocks our media ports. Sending one internal reliable packet addressed to
+     * ourselves (the server delivers it to nobody) forces that connection now,
+     * so a failure shows up at join time and AUTO can move to the relay.
+     */
+    private fun probePublisher() {
+        if (options.cloudProxy != AppCloudProxy.AUTO || proxyState != AppProxyState.DIRECT) return
+        val self = localUid.takeIf { it.isNotEmpty() } ?: return
+        scope.launch {
+            try {
+                room.localParticipant.publishData(
+                    "{}".toByteArray(Charsets.UTF_8),
+                    io.livekit.android.room.track.DataPublishReliability.RELIABLE,
+                    CodecHealth.INTERNAL_TOPIC_PREFIX + "probe",
+                    listOf(io.livekit.android.room.participant.Participant.Identity(self)),
+                )
+                debug("publisher connection ok")
+            } catch (t: Throwable) {
+                // Internal probe: never surfaces to the app unless the relay retry fails.
+                debug("publisher probe failed: ${t.javaClass.simpleName}: ${t.message}")
+                maybeRelayAfterPublisherFailure(t)
+            }
+        }
+    }
+
+    /** The engine's "could not establish publisher connection" (a ConnectException from a reliable send). */
+    private fun isPublisherUnreachable(error: Throwable): Boolean {
+        var t: Throwable? = error
+        while (t != null) {
+            if (t is java.net.ConnectException && t.message?.contains("publisher connection", ignoreCase = true) == true) return true
+            t = t.cause.takeIf { it !== t }
+        }
+        return false
+    }
+
+    /**
+     * Joined directly, but the publish connection failed: with cloudProxy AUTO,
+     * rejoin once through the relay (TLS 443) and restore the microphone and
+     * camera. Returns true when the retry was started (the error is handled).
+     */
+    private fun maybeRelayAfterPublisherFailure(error: Throwable): Boolean {
+        if (!isPublisherUnreachable(error)) return false
+        if (publisherRelayTried || !isJoined || options.cloudProxy != AppCloudProxy.AUTO || proxyState != AppProxyState.DIRECT) return false
+        val url = joinWsUrl ?: return false
+        val token = joinToken ?: return false
+        publisherRelayTried = true
+        scope.launch {
+            val lp = room.localParticipant
+            val hadMic = lp.isMicrophoneEnabled()
+            val hadCam = lp.isCameraEnabled()
+            debug("publisher connection failed after join; rejoining once through the cloud proxy on TLS 443 (mic=$hadMic camera=$hadCam)")
+            android.util.Log.w(TAG, "Upstream connection failed; rejoining through the AppLooma cloud proxy (TLS 443)")
+            proxyRetrying = true
+            try {
+                try { room.disconnect() } catch (_: Throwable) {}
+                kotlinx.coroutines.delay(300)
+            } finally { proxyRetrying = false }
+            setProxyState(AppProxyState.CONNECTING, true)
+            try {
+                room.connect(url, token, relayConnectOptions())
+            } catch (t: Throwable) {
+                setProxyState(AppProxyState.DIRECT, true)
+                debug("relay rejoin failed: ${t.javaClass.simpleName}: ${t.message}")
+                Diagnostics.endSession("relay rejoin failed")
+                isJoined = false
+                users.clear()
+                eventHandler?.onError(t)
+                eventHandler?.onDisconnected(null)
+                return@launch
+            }
+            setProxyState(AppProxyState.CONNECTED, true)
+            debug("rejoined through the cloud proxy localUid=$localUid")
+            users.clear()
+            seedExistingParticipants()
+            try {
+                if (hadMic) lp.setMicrophoneEnabled(true)
+                if (hadCam && cameraAllowed()) lp.setCameraEnabled(true)
+                notifyLocalVideoChanged()
+            } catch (t: Throwable) { debug("error: republish after relay rejoin ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) }
+        }
+        return true
+    }
 
     private suspend fun connectWithProxy(wsUrl: String, token: String) {
         val mode = options.cloudProxy
@@ -742,7 +856,19 @@ class AppEngine private constructor(
     }
 
     /** Flip between the front and back cameras. Does nothing until the camera is on. */
-    fun switchCamera() = launchSafely { (localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack)?.switchCamera(); notifyLocalVideoChanged() }
+    fun switchCamera() = launchSafely {
+        val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
+        val wasFront = localCameraIsFront
+        track.switchCamera()
+        // The switch finishes asynchronously; the self-view mirror follows the
+        // camera's facing, so re-apply it as soon as the new facing is known
+        // instead of showing the back camera mirrored until the next refresh.
+        for (i in 0 until 30) {
+            if (localCameraIsFront != wasFront) break
+            kotlinx.coroutines.delay(50)
+        }
+        notifyLocalVideoChanged()
+    }
 
     /**
      * Route audio to the loudspeaker (true) or the earpiece (false).
@@ -1201,7 +1327,7 @@ class AppEngine private constructor(
         if (noiseSuppression == on) return@launchSafely
         noiseSuppression = on
         val lp = room.localParticipant
-        lp.audioTrackCaptureDefaults = lp.audioTrackCaptureDefaults.copy(noiseSuppression = on)
+        lp.audioTrackCaptureDefaults = lp.audioTrackCaptureDefaults.copy(noiseSuppression = MicCapture.flag("ns", on))
         if (lp.isMicrophoneEnabled()) {
             lp.setMicrophoneEnabled(false)
             lp.setMicrophoneEnabled(true)
@@ -1218,12 +1344,13 @@ class AppEngine private constructor(
      */
     fun setNoiseSuppressionMode(mode: AppNoiseSuppression) {
         micGain.clearVoice = mode == AppNoiseSuppression.CLEAR
-        setNoiseSuppression(mode != AppNoiseSuppression.OFF)
+        // Outside SPEECH, Clear Voice runs without the engine suppressor (as at create time).
+        setNoiseSuppression(mode == AppNoiseSuppression.STANDARD || (mode == AppNoiseSuppression.CLEAR && profileSettings.profile == AppAudioProfile.SPEECH))
     }
 
     /** The noise suppression mode in force. Since 0.4.18. */
     val noiseSuppressionMode: AppNoiseSuppression
-        get() = when { !noiseSuppression -> AppNoiseSuppression.OFF; micGain.clearVoice -> AppNoiseSuppression.CLEAR; else -> AppNoiseSuppression.STANDARD }
+        get() = when { micGain.clearVoice -> AppNoiseSuppression.CLEAR; !noiseSuppression -> AppNoiseSuppression.OFF; else -> AppNoiseSuppression.STANDARD }
 
     /**
      * Grab one frame of your own camera as a Bitmap, on this device only.
@@ -1471,7 +1598,12 @@ class AppEngine private constructor(
     }
 
     private fun launchSafely(block: suspend () -> Unit) {
-        scope.launch { try { block() } catch (t: Throwable) { debug("error: ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) } }
+        scope.launch {
+            try { block() } catch (t: Throwable) {
+                debug("error: ${t.javaClass.simpleName}: ${t.message}")
+                if (!maybeRelayAfterPublisherFailure(t)) eventHandler?.onError(t)
+            }
+        }
     }
 
     private fun onMain(block: () -> Unit) { scope.launch { block() } }
@@ -2171,6 +2303,10 @@ internal class MicProcessor(
     @Volatile var gateThresholdDbfs: Float,
     /** 0 = off. */
     @Volatile var agcTargetDbfs: Int,
+    /** Fixed gain from the audio profile, on top of [gainPercent]. */
+    @Volatile var fixedGain: Float = 1f,
+    /** Peak ceiling of the soft limiter (linear); 1 = full scale. */
+    @Volatile var ceiling: Float = 1f,
 ) : AudioProcessorInterface {
     private var gateGain = 1f
     private var agcGain = 1f
@@ -2180,7 +2316,7 @@ internal class MicProcessor(
     @Volatile var clearVoice = false
     private val denoiser = ClearVoiceDenoiser()
 
-    override fun isEnabled(): Boolean = clearVoice || gainPercent != 100 || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
+    override fun isEnabled(): Boolean = CaptureProbes.sent.active || AudioDump.enabled || clearVoice || gainPercent != 100 || fixedGain != 1f || ceiling < 1f || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
     override fun getName(): String = "applooma-mic"
     override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f }
     override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f }
@@ -2199,6 +2335,8 @@ internal class MicProcessor(
         val n = minOf(numBands * numFrames, fb.limit())
         if (n <= 0) return
         if (clearVoice) denoiser.process(fb, n) else denoiser.reset()
+        if (CaptureProbes.sent.active) CaptureProbes.sent.feedFloat(fb, minOf(n, numFrames), numFrames * 100)
+        if (AudioDump.enabled) AudioDump.sent(fb, minOf(n, numFrames), numFrames * 100)
 
         // The engine hands this stage audio as floats in 16-bit range
         // (±32768), not ±1. Treating it as ±1 made every gain other than
@@ -2225,15 +2363,17 @@ internal class MicProcessor(
             agcGain += (wanted - agcGain) * (if (wanted < agcGain) 0.3f else 0.02f)
         } else if (agcTargetDbfs == 0) agcGain = 1f
 
-        val g = gateGain * agcGain * (gainPercent / 100f)
-        if (g == 1f) return
+        val g = gateGain * agcGain * (gainPercent / 100f) * fixedGain
+        if (g == 1f && ceiling >= 1f) return
+        val top = ceiling.coerceIn(0.1f, 1f)
+        val knee = KNEE * top
         for (i in 0 until n) {
             var y = fb.get(i) / scale * g
-            // Soft knee above ±0.8, hard ceiling at ±1: loud peaks compress instead of clip.
+            // Soft knee above 0.8 x ceiling, never above the ceiling (±1 by default, -3 dBFS in HD_VOICE): loud peaks compress instead of clip.
             val a = kotlin.math.abs(y)
-            if (a > KNEE) {
-                val over = a - KNEE
-                val limited = KNEE + (1f - KNEE) * (1f - kotlin.math.exp(-over / (1f - KNEE)))
+            if (a > knee) {
+                val over = a - knee
+                val limited = knee + (top - knee) * (1f - kotlin.math.exp(-over / (top - knee)))
                 y = if (y < 0) -limited else limited
             }
             fb.put(i, y * scale)

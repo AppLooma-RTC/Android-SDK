@@ -109,7 +109,7 @@ data class AppVideoConfig @JvmOverloads constructor(
     val codec: AppVideoCodec = AppVideoCodec.AUTO,
     /**
      * What to give up first under pressure. See [AppVideoDegradation]. AUTO =
-     * chosen by [mode] (KEEP_RESOLUTION in STABLE_HD and ULTRA_HD_4K). Since 0.4.10.
+     * chosen by [mode] (BALANCED in STABLE_HD, KEEP_RESOLUTION in ULTRA_HD_4K). Since 0.4.10.
      */
     val degradation: AppVideoDegradation = AppVideoDegradation.AUTO,
     /**
@@ -189,6 +189,13 @@ data class AppAudioOptions @JvmOverloads constructor(
      * [noiseSuppression] = false also means OFF. Since 0.4.18.
      */
     val noiseSuppressionMode: AppNoiseSuppression = AppNoiseSuppression.STANDARD,
+    /**
+     * Audio quality profile: capture source, processing and codec settings in
+     * one choice. HD_VOICE (default) is full-band 48 kHz voice for live
+     * streams and voice rooms. See [AppAudioProfile]. Set at create time.
+     * Since 0.4.21.
+     */
+    val profile: AppAudioProfile = AppAudioProfile.HD_VOICE,
 ) {
     /** The mode in force once [noiseSuppression] and [noiseSuppressionMode] are combined. */
     val effectiveNoiseSuppression: AppNoiseSuppression
@@ -204,6 +211,37 @@ data class AppAudioOptions @JvmOverloads constructor(
  * suppressor, not a neural model, and adds 10 ms of latency. Since 0.4.18.
  */
 enum class AppNoiseSuppression { STANDARD, CLEAR, OFF }
+
+/**
+ * Audio quality profile, see [AppAudioOptions.profile]. It combines with
+ * [AppAudioScenario]: the scenario picks volume stream and attributes, the
+ * profile picks how the microphone is captured, processed and encoded.
+ * Since 0.4.21.
+ */
+enum class AppAudioProfile {
+    /**
+     * Phone-call voice for 1-to-1 calls on the earpiece: the platform's voice
+     * capture path, echo cancellation, noise suppression and AGC on, mono
+     * 32 kbps. Narrow band on many phones. With [AppAudioScenario.CALL] the
+     * call starts on the earpiece.
+     */
+    SPEECH,
+    /**
+     * HD voice (default) for live streams, voice rooms and loudspeaker calls:
+     * 48 kHz voice capture with the phone's and the engine's echo
+     * cancelling, noise suppression and AGC, call audio mode, high-pass
+     * filter, mono Opus 64 kbps. Clear Voice ([AppNoiseSuppression.CLEAR]),
+     * the noise gate and micGain still apply.
+     */
+    HD_VOICE,
+    /**
+     * Music for karaoke, music hosts and performers: 48 kHz stereo capture
+     * where the phone supports it, every processing stage off, 128 kbps,
+     * media audio mode. Use with headphones: without echo cancellation the
+     * loudspeaker is picked up by the microphone and others hear an echo.
+     */
+    MUSIC,
+}
 
 /**
  * How much delay an audience member accepts for smoother playback, see

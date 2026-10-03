@@ -127,15 +127,19 @@ internal object SharedAudio {
     @Synchronized fun unlisten(owner: Any) { listeners.remove(owner) }
 
     /** The per-room handle. The engine calls start on connect and stop on disconnect. */
-    fun handlerFor(context: Context, owner: Any, scenario: AppAudioScenario): AudioHandler = object : AudioHandler {
-        override fun start() = acquire(context, owner, scenario)
+    /** Profile settings of the engine whose scenario is in force. */
+    @Volatile private var activeProfile: AudioProfileSettings? = null
+
+    fun handlerFor(context: Context, owner: Any, scenario: AppAudioScenario, profile: AudioProfileSettings): AudioHandler = object : AudioHandler {
+        override fun start() = acquire(context, owner, scenario, profile)
         override fun stop() = release(owner)
     }
 
-    @Synchronized private fun acquire(context: Context, owner: Any, scenario: AppAudioScenario) {
+    @Synchronized private fun acquire(context: Context, owner: Any, scenario: AppAudioScenario, profile: AudioProfileSettings) {
         if (!holders.add(owner)) return
         val s = switcher(context)
         if (holders.size == 1) {
+            activeProfile = profile
             configure(s, scenario)
             activeScenario = scenario
             s.start()
@@ -149,6 +153,7 @@ internal object SharedAudio {
         if (holders.isEmpty()) {
             switcher?.stop()
             activeScenario = null
+            activeProfile = null
             preferSpeaker = null // the next channel starts from its own scenario's default
         }
     }
@@ -165,13 +170,15 @@ internal object SharedAudio {
     }
 
     private fun configure(s: AudioSwitchHandler, scenario: AppAudioScenario) {
-        val media = scenario == AppAudioScenario.MEDIA
+        val normal = activeProfile?.normalMode == true
+        val media = normal || scenario == AppAudioScenario.MEDIA
         // Same values the engine applies to its own switcher for these audio types.
-        s.audioMode = android.media.AudioManager.MODE_IN_COMMUNICATION
+        s.audioMode = if (normal) android.media.AudioManager.MODE_NORMAL else if (media) MicCapture.mediaMode() else android.media.AudioManager.MODE_IN_COMMUNICATION
         s.audioStreamType = if (media) android.media.AudioManager.STREAM_MUSIC else android.media.AudioManager.STREAM_VOICE_CALL
         s.audioAttributeUsageType = if (media) android.media.AudioAttributes.USAGE_MEDIA else android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
         s.audioAttributeContentType = if (media) android.media.AudioAttributes.CONTENT_TYPE_MUSIC else android.media.AudioAttributes.CONTENT_TYPE_SPEECH
-        val speakerFirst = preferSpeaker ?: media
+        // Earpiece first only for an explicit SPEECH profile in the CALL scenario.
+        val speakerFirst = preferSpeaker ?: (activeProfile?.let { !it.earpieceFirst } ?: media)
         val tail = if (speakerFirst)
             listOf(com.twilio.audioswitch.AudioDevice.Speakerphone::class.java, com.twilio.audioswitch.AudioDevice.Earpiece::class.java)
         else
