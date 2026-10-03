@@ -93,7 +93,7 @@ internal data class AudioProfileSettings(
                 noiseSuppression = audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF,
                 autoGainControl = audio.autoGainControl,
                 highPassFilter = true, bitrate = 64_000, dtx = false, red = true,
-                normalMode = false, earpieceFirst = false,
+                normalMode = false, earpieceFirst = scenario == AppAudioScenario.CALL,
                 fixedGain = 1f, limiterCeiling = 1f,
                 hardwareAec = audio.echoCancellation,
                 hardwareNs = audio.effectiveNoiseSuppression != AppNoiseSuppression.OFF,

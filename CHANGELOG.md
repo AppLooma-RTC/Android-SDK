@@ -1,5 +1,10 @@
 # Changelog
 
+## rtc-android 0.4.22 · uikit-android 0.2.16 — 2026-10-03
+
+- An engine with `AppAudioScenario.CALL` starts on the earpiece again with the default HD_VOICE profile, as it did before 0.4.21 (0.4.21 started 1-to-1 calls on the loudspeaker). MEDIA engines (live streams, voice rooms) still start on the loudspeaker. `setEnableSpeakerphone` is unchanged.
+- uikit-android 0.2.16: built on rtc-android 0.4.22. No UIKit API changes.
+
 ## rtc-android 0.4.21 · uikit-android 0.2.15 — 2026-10-03
 
 - uikit-android 0.2.15: built on rtc-android 0.4.21. No UIKit API changes.

@@ -14,7 +14,10 @@ class AudioProfileTest {
         val s = AudioProfileSettings.resolve(AppAudioProfile.HD_VOICE, audio, AppAudioScenario.CALL)
         assertEquals(AudioProfileSettings.VOICE_COMMUNICATION, s.audioSource)
         assertTrue(s.echoCancellation && s.hardwareAec && s.hardwareNs && s.noiseSuppression && s.autoGainControl)
-        assertEquals(64_000, s.bitrate); assertFalse(s.normalMode); assertFalse(s.earpieceFirst)
+        assertEquals(64_000, s.bitrate); assertFalse(s.normalMode)
+        // A CALL-scenario engine starts on the earpiece, as before 0.4.21; MEDIA on the loudspeaker.
+        assertTrue(s.earpieceFirst)
+        assertFalse(AudioProfileSettings.resolve(AppAudioProfile.HD_VOICE, audio, AppAudioScenario.MEDIA).earpieceFirst)
         assertEquals("audio profile=HD_VOICE source=voice in=48000 out=48000 aec=on+hw ns=on hwns=on agc=on mode=call bitrate=64k stereo=false", s.logLine())
     }
 
