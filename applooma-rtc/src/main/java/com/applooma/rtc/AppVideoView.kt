@@ -43,6 +43,7 @@ class AppVideoView @JvmOverloads constructor(
     private val renderer = TextureViewRenderer(context)
     private var attachedTrack: VideoTrack? = null
     private var attachedRtc: livekit.org.webrtc.VideoTrack? = null
+    private var attachedSink = false
     private var initialised = false
     private var waitingFor: AppRemoteUser? = null
     private var waitingLocal: AppEngine? = null
@@ -192,13 +193,21 @@ class AppVideoView @JvmOverloads constructor(
             initialised = true
         }
 
-        track.addRenderer(renderer)
+        // The engine's local track hands its renderers the raw camera frames,
+        // ahead of any processor; draw from the native track instead so the
+        // host's own preview shows what viewers get (beauty, filters, effects).
+        val local = track is io.livekit.android.room.track.LocalVideoTrack && rtc != null
+        if (local) rtc!!.addSink(renderer) else track.addRenderer(renderer)
+        attachedSink = local
         attachedTrack = track
         attachedRtc = rtc
     }
 
     private fun unbind() {
-        try { attachedTrack?.removeRenderer(renderer) } catch (_: Throwable) {}
+        try {
+            if (attachedSink) attachedRtc?.removeSink(renderer) else attachedTrack?.removeRenderer(renderer)
+        } catch (_: Throwable) {}
+        attachedSink = false
         attachedTrack = null
         attachedRtc = null
     }

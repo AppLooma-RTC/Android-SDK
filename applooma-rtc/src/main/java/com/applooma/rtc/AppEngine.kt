@@ -34,6 +34,7 @@ import io.livekit.android.room.track.VideoQuality
 import io.livekit.android.room.track.VideoTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -587,6 +588,7 @@ class AppEngine private constructor(
      * Returns once you are in; [AppEventHandler.onJoined] fires at the same moment.
      */
     suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
+        if (previewTrack != null) withContext(Dispatchers.Main) { endPreview() }
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
         joinStartedAt = System.currentTimeMillis()
         firstFrameSeen.clear()
@@ -790,6 +792,7 @@ class AppEngine private constructor(
     }
 
     fun leaveChannel() {
+        if (previewTrack != null) onMain { endPreview() }
         if (isJoined) debug("leaveChannel")
         Diagnostics.endSession("leave")
         tokenTimer?.cancel(); tokenTimer = null
@@ -821,6 +824,7 @@ class AppEngine private constructor(
     // permission, publish rejected) is reported rather than thrown from a
     // coroutine, where it would crash the host application.
     fun enableCamera(on: Boolean) = launchSafely {
+        endPreview()
         if (on && localVideoTrack == null && !cameraAllowed()) return@launchSafely
         localFallbackMuted = false; room.localParticipant.setCameraEnabled(on); notifyLocalVideoChanged()
     }
@@ -1278,6 +1282,19 @@ class AppEngine private constructor(
 
     private var videoProcessor: AppVideoProcessor? = null
     private var enhanceFilter: AppVideoFilters? = null
+    private var textureProcessor: AppTextureProcessor? = null
+    private var installedAdapter: ProcessorAdapter? = null
+
+    /**
+     * Install a GPU frame hook (beauty, filters, effects); null removes it.
+     * Runs before [setVideoEnhance] and [setVideoProcessor]. See
+     * [AppTextureProcessor]. Since 0.4.23.
+     */
+    fun setTextureProcessor(processor: AppTextureProcessor?) {
+        textureProcessor = processor
+        appliedProcessorTrack = null
+        onMain { applyVideoProcessor() }
+    }
 
     /**
      * Built-in camera enhancement: skin smoothing, low-light boost, sharpening
@@ -1309,8 +1326,12 @@ class AppEngine private constructor(
         if (source == null) { if (track != null && videoProcessor != null) debug("video processor: capture source not reachable"); return }
         try {
             val effective = AppVideoFilters.chain(enhanceFilter, videoProcessor)
-            source.setVideoProcessor(effective?.let { ProcessorAdapter(it) })
-            debug("video processor ${if (effective != null) "installed" else "removed"}")
+            val gpu = textureProcessor
+            installedAdapter?.releaseGpu()
+            val adapter = if (effective != null || gpu != null) ProcessorAdapter(effective, gpu) else null
+            installedAdapter = adapter
+            source.setVideoProcessor(adapter)
+            debug("video processor ${if (adapter != null) "installed" else "removed"}${if (gpu != null) " (gpu)" else ""}")
         } catch (t: Throwable) { debug("video processor failed: $t") }
     }
 
@@ -1636,7 +1657,34 @@ class AppEngine private constructor(
     internal val raw: Room get() = room
 
     internal val localVideoTrack: VideoTrack?
-        get() = room.localParticipant.videoTrackPublications.firstNotNullOfOrNull { it.second as? VideoTrack }
+        get() = room.localParticipant.videoTrackPublications.firstNotNullOfOrNull { it.second as? VideoTrack } ?: previewTrack
+
+    private var previewTrack: io.livekit.android.room.track.LocalVideoTrack? = null
+
+    /**
+     * Open the camera without joining: a "go live" screen shows the host with
+     * beauty and filters before anything is published. Show it in an
+     * [AppVideoView] attached to the local user. Joining, [enableCamera],
+     * [leaveChannel] and [destroy] end the preview. Since 0.4.23.
+     */
+    fun startPreview() = launchSafely {
+        if (previewTrack != null || !cameraAllowed()) return@launchSafely
+        val t = room.localParticipant.createVideoTrack()
+        t.startCapture()
+        previewTrack = t
+        notifyLocalVideoChanged()
+    }
+
+    /** Close the camera opened by [startPreview]. */
+    fun stopPreview() = launchSafely { endPreview() }
+
+    private fun endPreview() {
+        val t = previewTrack ?: return
+        previewTrack = null
+        try { t.stopCapture() } catch (_: Throwable) {}
+        try { t.dispose() } catch (_: Throwable) {}
+        notifyLocalVideoChanged()
+    }
 
     /** Whether the local camera faces the user (drives the default self-view mirror). */
     internal val localCameraIsFront: Boolean

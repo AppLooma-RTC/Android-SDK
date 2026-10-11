@@ -762,3 +762,44 @@ class AppVideoFrame(
 fun interface AppVideoProcessor {
     fun process(frame: AppVideoFrame): AppVideoFrame
 }
+
+/**
+ * One camera frame on the GPU, handed to an [AppTextureProcessor].
+ *
+ * [textureId] is an external OES texture ([isOes] = true, the camera) or a
+ * GL_TEXTURE_2D one. Sample it with [transformMatrix] (4x4, column-major, as
+ * for SurfaceTexture.getTransformMatrix) applied to the texture coordinates.
+ * `rotation` is how the frame must be turned to be upright; `width`/`height`
+ * are before that rotation. Since 0.4.23.
+ */
+class AppTextureFrame(
+    val textureId: Int,
+    val isOes: Boolean,
+    val transformMatrix: FloatArray,
+    val width: Int,
+    val height: Int,
+    val rotation: Int,
+    val timestampNs: Long,
+)
+
+/**
+ * GPU frame hook for beauty, filters and effects at camera frame rate with no
+ * GPU-to-CPU copy. Runs on the camera thread with the SDK's shared EGL context
+ * current, before any [AppVideoProcessor]. Since 0.4.23.
+ *
+ * Return the id of a GL_TEXTURE_2D (RGBA) the size of the frame, drawn in the
+ * frame's own orientation (sampled with an identity matrix), or a negative
+ * number to send the frame unchanged. The SDK reads the returned texture
+ * after [process] returns, possibly on the encoder; keep it untouched until
+ * [onTextureReleased] hands it back. A pool of three textures is enough.
+ * An exception thrown here sends the original frame.
+ *
+ * Install with [AppEngine.setTextureProcessor].
+ */
+interface AppTextureProcessor {
+    fun process(frame: AppTextureFrame): Int
+    /** The SDK no longer reads [textureId]; it may be drawn into again. */
+    fun onTextureReleased(textureId: Int) {}
+    /** The processor was removed or the camera stopped; free GL resources here (EGL context current). */
+    fun release() {}
+}

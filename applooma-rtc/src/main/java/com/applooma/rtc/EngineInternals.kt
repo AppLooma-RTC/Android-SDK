@@ -58,26 +58,72 @@ internal object TrackAccess {
 }
 
 /** Bridges an [AppVideoProcessor] onto a capture source. One per source. */
-internal class ProcessorAdapter(private val processor: AppVideoProcessor) : VideoProcessor {
+internal class ProcessorAdapter(
+    private val processor: AppVideoProcessor?,
+    private val gpu: AppTextureProcessor? = null,
+) : VideoProcessor {
     @Volatile private var sink: VideoSink? = null
+    private var yuvConverter: livekit.org.webrtc.YuvConverter? = null
+    private var handler: android.os.Handler? = null
+    private val identity = android.graphics.Matrix()
+    private var gpuErrors = 0
 
     override fun setSink(sink: VideoSink?) { this.sink = sink }
     override fun onCapturerStarted(success: Boolean) {}
-    override fun onCapturerStopped() {}
+    override fun onCapturerStopped() { releaseGpu() }
+
+    /** Frees the GPU stage on the camera thread (where its GL context lives). */
+    fun releaseGpu() {
+        val h = handler
+        val run = Runnable {
+            try { gpu?.release() } catch (_: Throwable) {}
+            yuvConverter?.release(); yuvConverter = null
+        }
+        if (h == null || h.looper == android.os.Looper.myLooper()) run.run() else h.post(run)
+    }
 
     override fun onFrameCaptured(frame: VideoFrame) {
         val out = sink ?: return
-        val processed = try { process(frame) } catch (_: Throwable) { null }
-        if (processed == null) { out.onFrame(frame); return }
-        out.onFrame(processed)
-        processed.release()
+        var current = frame
+        var owned = false
+        if (gpu != null) {
+            val g = try { processGpu(frame) } catch (t: Throwable) {
+                if (gpuErrors++ % 300 == 0) android.util.Log.w("AppLoomaRTC", "texture processor failed: $t")
+                null
+            }
+            if (g != null) { current = g; owned = true }
+        }
+        if (processor != null) {
+            val processed = try { process(current) } catch (_: Throwable) { null }
+            if (processed != null) {
+                if (owned) current.release()
+                current = processed; owned = true
+            }
+        }
+        out.onFrame(current)
+        if (owned) current.release()
+    }
+
+    private fun processGpu(frame: VideoFrame): VideoFrame? {
+        val tb = frame.buffer as? VideoFrame.TextureBuffer ?: return null
+        val looper = android.os.Looper.myLooper() ?: return null
+        val h = handler ?: android.os.Handler(looper).also { handler = it }
+        val conv = yuvConverter ?: livekit.org.webrtc.YuvConverter().also { yuvConverter = it }
+        val m = livekit.org.webrtc.RendererCommon.convertMatrixFromAndroidGraphicsMatrix(tb.transformMatrix)
+        val input = AppTextureFrame(tb.textureId, tb.type == VideoFrame.TextureBuffer.Type.OES, m, tb.width, tb.height, frame.rotation, frame.timestampNs)
+        val tex = gpu!!.process(input)
+        if (tex < 0) return null
+        val buffer = livekit.org.webrtc.TextureBufferImpl(
+            tb.width, tb.height, VideoFrame.TextureBuffer.Type.RGB, tex, identity, h, conv,
+        ) { try { gpu.onTextureReleased(tex) } catch (_: Throwable) {} }
+        return VideoFrame(buffer, frame.rotation, frame.timestampNs)
     }
 
     private fun process(frame: VideoFrame): VideoFrame {
         val i420 = frame.buffer.toI420() ?: throw IllegalStateException("no I420")
         try {
             val input = AppVideoFrame(i420.width, i420.height, i420.dataY, i420.strideY, i420.dataU, i420.strideU, i420.dataV, i420.strideV, frame.rotation, frame.timestampNs)
-            val result = processor.process(input)
+            val result = processor!!.process(input)
             if (result === input) return VideoFrame(i420, frame.rotation, frame.timestampNs)
             val wrapped = JavaI420Buffer.wrap(result.width, result.height, result.dataY, result.strideY, result.dataU, result.strideU, result.dataV, result.strideV) { i420.release() }
             return VideoFrame(wrapped, result.rotation, result.timestampNs)
