@@ -1,5 +1,9 @@
 # Changelog
 
+## uikit-android 0.2.17
+
+- Built on rtc-android 0.4.24 (smart routing). No UIKit API changes.
+
 ## rtc-android 0.4.24 — 2026-10-12
 
 - Smart routing: just before connecting, the SDK asks the AppLooma API which media server suits this device; the first caller pins the room and everyone else follows it. Only applies to applooma.dev URLs, with a 2 s timeout and a silent fallback to the URL you passed. Opt out with `AppJoinOptions(smartRouting = false)`.
