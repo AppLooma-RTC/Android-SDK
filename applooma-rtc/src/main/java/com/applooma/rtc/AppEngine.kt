@@ -590,6 +590,8 @@ class AppEngine private constructor(
     suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         if (previewTrack != null) withContext(Dispatchers.Main) { endPreview() }
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
+        // Smart routing: pick the media server for this device / room (our own URLs only).
+        @Suppress("NAME_SHADOWING") val wsUrl = if (options.smartRouting) SmartRoute.resolve(token, wsUrl) else wsUrl
         joinStartedAt = System.currentTimeMillis()
         firstFrameSeen.clear()
         resetCodecRecovery()

@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.4.24 — 2026-10-12
+
+- Smart routing: just before connecting, the SDK asks the AppLooma API which media server suits this device; the first caller pins the room and everyone else follows it. Only applies to applooma.dev URLs, with a 2 s timeout and a silent fallback to the URL you passed. Opt out with `AppJoinOptions(smartRouting = false)`.
+
 ## rtc-android 0.4.22 · uikit-android 0.2.16 — 2026-10-03
 
 - An engine with `AppAudioScenario.CALL` starts on the earpiece again with the default HD_VOICE profile, as it did before 0.4.21 (0.4.21 started 1-to-1 calls on the loudspeaker). MEDIA engines (live streams, voice rooms) still start on the loudspeaker. `setEnableSpeakerphone` is unchanged.

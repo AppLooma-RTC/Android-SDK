@@ -470,6 +470,11 @@ data class AppJoinOptions @JvmOverloads constructor(
     val camera: Boolean = false,
     /** Auto-enable microphone on join (ignored for audience). */
     val microphone: Boolean = true,
+    /**
+     * Connect to the AppLooma media server best placed for this device and room
+     * (applooma.dev URLs only; falls back to the given URL on any failure). Since 0.4.24.
+     */
+    val smartRouting: Boolean = true,
 )
 
 /**
