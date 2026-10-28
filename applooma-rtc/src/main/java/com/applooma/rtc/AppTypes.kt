@@ -819,3 +819,51 @@ interface AppTextureProcessor {
     /** The processor was removed or the camera stopped; free GL resources here (EGL context current). */
     fun release() {}
 }
+
+/**
+ * Voice changer presets for [AppEngine.setVoiceChangerPreset]. Everyone in the
+ * room hears the changed voice; it is applied on the microphone before sending.
+ *
+ * [key] is a stable short name an app can store (for example in its settings)
+ * and turn back into a preset with [fromKey]. Keys never change between SDK
+ * versions. Since 0.5.0.
+ */
+enum class AppVoiceChanger(val key: String) {
+    OFF("off"),
+    /** High pitch, small voice. */
+    BABY("baby"),
+    /** Slightly higher, softer. */
+    FEMALE("female"),
+    /** Slightly lower, fuller. */
+    MALE("male"),
+    /** Much lower, with bass. */
+    DEEP_MALE("deepmale"),
+    /** Between a man's and a woman's voice. */
+    NEUTRAL("neutral"),
+    /** A cartoon character. */
+    CARTOON("cartoon"),
+    /** Very high and quick-sounding. */
+    CHIPMUNK("chipmunk"),
+    /** A cheeky child, nasal. */
+    SHIN_CHAN("shinchan"),
+    /** A man's voice made lighter. */
+    GIRLISH_MAN("girlishman"),
+    /** A firm, edgy woman's voice. */
+    IRON_LADY("ironlady"),
+    /** Very low with a growl. */
+    MONSTER("monster"),
+    /** Metallic, mechanical. */
+    ROBOT("robot"),
+    /** Deep and dull, like a talking tree. */
+    GROOT("groot"),
+    /** Deep voice behind a mask. */
+    DARTH_VADER("vader"),
+    /** Narrow, like an old telephone line. */
+    PHONE("phone");
+
+    companion object {
+        /** The preset for a stored [key]; unknown or null keys give [OFF]. */
+        @JvmStatic fun fromKey(key: String?): AppVoiceChanger =
+            values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: OFF
+    }
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## rtc-android 0.5.0 · uikit-android 0.2.19 — 2026-10-28
+
+- Voice changer: `setVoiceChangerPreset(AppVoiceChanger)` with 15 voices (BABY, FEMALE, MALE, DEEP_MALE, NEUTRAL, CARTOON, CHIPMUNK, SHIN_CHAN, GIRLISH_MAN, IRON_LADY, MONSTER, ROBOT, GROOT, DARTH_VADER, PHONE) and OFF. Everyone in the room hears it. Works before or after joining, switches instantly, survives role changes. Stable keys for storing the choice: `AppVoiceChanger.key` / `fromKey`. About 16 ms of added delay for pitch-changing voices; measured cost on a budget MediaTek phone is about 7 % of one core while a voice is on, nothing while OFF.
+- In-ear monitoring: `enableInEarMonitoring(Boolean)`, `setInEarMonitoringVolume(0..100)`. The speaker hears their processed voice on headphones only (silent on loudspeaker/earpiece, so it can never cause an echo).
+- uikit-android 0.2.19: built on rtc-android 0.5.0. No UIKit API changes.
+
 ## rtc-android 0.4.25 · uikit-android 0.2.18 — 2026-10-28
 
 - Fixed a crash on some phones: `UnsupportedOperationException: Cannot create AudioTrack` from the call-mode audio keep-alive (a silent track that stops Android 11+ dropping call mode in a quiet room). The SDK now runs its own keep-alive with every step guarded: a refusal is logged once, the keep-alive switches off for the rest of the process, and the call continues.

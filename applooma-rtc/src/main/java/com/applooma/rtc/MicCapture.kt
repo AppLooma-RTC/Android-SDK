@@ -12,7 +12,7 @@ import livekit.org.webrtc.audio.JavaAudioDeviceModule
  * Unset properties leave the profile's settings untouched.
  */
 internal object MicCapture {
-    private fun prop(name: String): String? = try {
+    internal fun prop(name: String): String? = try {
         val c = Class.forName("android.os.SystemProperties")
         (c.getMethod("get", String::class.java).invoke(null, name) as? String)?.takeIf { it.isNotBlank() }
     } catch (_: Throwable) { null }

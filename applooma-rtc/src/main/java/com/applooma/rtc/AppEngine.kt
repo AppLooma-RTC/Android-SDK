@@ -113,6 +113,12 @@ class AppEngine private constructor(
         profileSettings.fixedGain, profileSettings.limiterCeiling)
         .also { it.clearVoice = options.audio.effectiveNoiseSuppression == AppNoiseSuppression.CLEAR }
 
+    /** In-ear monitoring; fed by [micGain], plays only on headphones. */
+    private val earMonitor = EarMonitor(
+        onHeadphones = { currentAudioRoute.let { it == AppAudioRoute.WIRED_HEADSET || it == AppAudioRoute.BLUETOOTH } },
+        log = { debug(it) },
+    ).also { micGain.ear = it }
+
     /**
      * The audio scenario this engine really runs with. An engine created while
      * another is in a channel (a PK battle's second connection) adopts the
@@ -624,6 +630,11 @@ class AppEngine private constructor(
         // App option, per-model server rule, and the test switch
         // (adb shell setprop debug.applooma.commkeepalive 0) must all allow it.
         keepAlive.forceFailure = MicCapture.flag("keepalivefail", false)
+        // Test switches for voice effects (no app UI needed):
+        //   adb shell setprop debug.applooma.voicechanger baby   (any AppVoiceChanger key)
+        //   adb shell setprop debug.applooma.earmonitor 1
+        MicCapture.prop("debug.applooma.voicechanger")?.takeIf { it.isNotBlank() }?.let { setVoiceChangerPreset(AppVoiceChanger.fromKey(it)); debug("voice changer (test switch): ${voiceChangerPreset.key}") }
+        if (MicCapture.flag("earmonitor", false)) { enableInEarMonitoring(true); debug("in-ear monitoring (test switch): on") }
         keepAlive.start(this.options.audio.audioKeepAlive && DeviceTelemetry.current.audioKeepAlive && MicCapture.flag("commkeepalive", true))
         armTokenTimer(token)
         // Device tuning: this join uses the cached answer (already in the room
@@ -1759,6 +1770,30 @@ class AppEngine private constructor(
      * Prefer this over [setRecordingVolume], which sits before processing.
      */
     fun setMicGain(percent: Int) { micGain.gainPercent = percent.coerceIn(0, 400) }
+
+    /**
+     * Changes the voice everyone in the room hears from this device: BABY,
+     * FEMALE, ROBOT and so on (see [AppVoiceChanger]); OFF restores the natural
+     * voice. Works before or after joining, takes effect within 10 ms without
+     * re-joining, and stays on through role changes. Adds about 16 ms of
+     * delay while a pitch-changing preset is on. Since 0.5.0.
+     */
+    fun setVoiceChangerPreset(preset: AppVoiceChanger) { micGain.voicePreset = preset }
+    val voiceChangerPreset: AppVoiceChanger get() = micGain.voicePreset
+
+    /**
+     * Lets the speaker hear their own voice, with the voice changer and every
+     * other microphone effect applied, while they talk. Only plays while the
+     * call is on headphones (wired or Bluetooth): on the loudspeaker it would
+     * come back through the microphone as an echo, so it stays silent there and
+     * starts by itself when headphones are connected. Only while this device is
+     * sending its microphone. Since 0.5.0.
+     */
+    fun enableInEarMonitoring(enabled: Boolean) { earMonitor.enabled = enabled }
+    val isInEarMonitoringEnabled: Boolean get() = earMonitor.enabled
+
+    /** In-ear monitoring volume, 0..100 (100 = as sent). Since 0.5.0. */
+    fun setInEarMonitoringVolume(volume: Int) { earMonitor.volume = volume.coerceIn(0, 100) / 100f }
     val micGainPercent: Int get() = micGain.gainPercent
 
     /**
@@ -2362,6 +2397,7 @@ class AppEngine private constructor(
         leaveChannel()
         SharedAudio.unlisten(this)
         keepAlive.release()
+        earMonitor.release()
         AppLoomaVideoEncoderFactory.removeFailureListener(encoderFailureListener)
         scope.launch { room.release() }
     }
@@ -2395,10 +2431,18 @@ internal class MicProcessor(
     @Volatile var clearVoice = false
     private val denoiser = ClearVoiceDenoiser()
 
-    override fun isEnabled(): Boolean = CaptureProbes.sent.active || AudioDump.enabled || clearVoice || gainPercent != 100 || fixedGain != 1f || ceiling < 1f || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
+    /** Voice changer preset (see VoiceChanger); applied after noise handling, before gain. */
+    @Volatile var voicePreset: AppVoiceChanger = AppVoiceChanger.OFF
+    /** In-ear monitoring sink, fed with the final processed microphone. */
+    @Volatile var ear: EarMonitor? = null
+    @Volatile private var rate = 48_000
+    private var voice: VoiceChanger? = null
+    private var scratch = FloatArray(960)
+
+    override fun isEnabled(): Boolean = voicePreset != AppVoiceChanger.OFF || voice?.active == true || ear?.enabled == true || CaptureProbes.sent.active || AudioDump.enabled || clearVoice || gainPercent != 100 || fixedGain != 1f || ceiling < 1f || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
     override fun getName(): String = "applooma-mic"
-    override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f }
-    override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f }
+    override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f; if (sampleRateHz > 0) rate = sampleRateHz }
+    override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f; if (newRate > 0) rate = newRate }
 
     override fun processAudio(numBands: Int, numFrames: Int, buffer: java.nio.ByteBuffer) {
         // Never let an exception escape into the native audio thread: the
@@ -2442,8 +2486,20 @@ internal class MicProcessor(
             agcGain += (wanted - agcGain) * (if (wanted < agcGain) 0.3f else 0.02f)
         } else if (agcTargetDbfs == 0) agcGain = 1f
 
+        // Voice changer: on the cleaned-up voice, before gain and the limiter
+        // (which then also catches any peaks the effect adds).
+        var v = voice
+        if (v == null || v.rate != rate) { v = VoiceChanger(rate); voice = v }
+        v.set(voicePreset)
+        if (v.busy) {
+            if (scratch.size < n) scratch = FloatArray(n)
+            for (i in 0 until n) scratch[i] = fb.get(i) / scale
+            v.process(scratch, n)
+            for (i in 0 until n) fb.put(i, scratch[i] * scale)
+        }
+
         val g = gateGain * agcGain * (gainPercent / 100f) * fixedGain
-        if (g == 1f && ceiling >= 1f) return
+        if (g == 1f && ceiling >= 1f) { feedEar(fb, n, scale); return }
         val top = ceiling.coerceIn(0.1f, 1f)
         val knee = KNEE * top
         for (i in 0 until n) {
@@ -2457,6 +2513,16 @@ internal class MicProcessor(
             }
             fb.put(i, y * scale)
         }
+        feedEar(fb, n, scale)
+    }
+
+    /** Hands the final microphone, exactly as it is sent, to in-ear monitoring. */
+    private fun feedEar(fb: java.nio.FloatBuffer, n: Int, scale: Float) {
+        val e = ear ?: return
+        if (!e.enabled) return
+        if (scratch.size < n) scratch = FloatArray(n)
+        for (i in 0 until n) scratch[i] = fb.get(i) / scale
+        e.feed(scratch, n, rate)
     }
 
     private companion object {
