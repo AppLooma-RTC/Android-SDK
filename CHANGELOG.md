@@ -4,6 +4,7 @@
 
 - Voice changer: `setVoiceChangerPreset(AppVoiceChanger)` with 15 voices (BABY, FEMALE, MALE, DEEP_MALE, NEUTRAL, CARTOON, CHIPMUNK, SHIN_CHAN, GIRLISH_MAN, IRON_LADY, MONSTER, ROBOT, GROOT, DARTH_VADER, PHONE) and OFF. Everyone in the room hears it. Works before or after joining, switches instantly, survives role changes. Stable keys for storing the choice: `AppVoiceChanger.key` / `fromKey`. About 16 ms of added delay for pitch-changing voices; measured cost on a budget MediaTek phone is about 7 % of one core while a voice is on, nothing while OFF.
 - In-ear monitoring: `enableInEarMonitoring(Boolean)`, `setInEarMonitoringVolume(0..100)`. The speaker hears their processed voice on headphones only (silent on loudspeaker/earpiece, so it can never cause an echo).
+- FEMALE moves the pitch about 7.5 semitones but the formants only about 15 %, the way a real woman’s voice differs from a man’s, so it sounds like an adult woman rather than a child (about 45 ms added delay; every other voice about 16 ms).
 - uikit-android 0.2.19: built on rtc-android 0.5.0. No UIKit API changes.
 
 ## rtc-android 0.4.25 · uikit-android 0.2.18 — 2026-10-28
