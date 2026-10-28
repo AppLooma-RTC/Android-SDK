@@ -1,5 +1,13 @@
 # Changelog
 
+## rtc-android 0.4.25 · uikit-android 0.2.18 — 2026-10-28
+
+- Fixed a crash on some phones: `UnsupportedOperationException: Cannot create AudioTrack` from the call-mode audio keep-alive (a silent track that stops Android 11+ dropping call mode in a quiet room). The SDK now runs its own keep-alive with every step guarded: a refusal is logged once, the keep-alive switches off for the rest of the process, and the call continues.
+- `AppAudioOptions.audioKeepAlive` (default true). False never uses the keep-alive.
+- The AppLooma server can turn the keep-alive off per phone model (device rule `disableAudioKeepAlive`, served as `audio.keepAlive: false`).
+- Lines passed to `enableDebugLogging` no longer carry third-party component names.
+- uikit-android 0.2.18: built on rtc-android 0.4.25. No UIKit API changes.
+
 ## uikit-android 0.2.17
 
 - Built on rtc-android 0.4.24 (smart routing). No UIKit API changes.

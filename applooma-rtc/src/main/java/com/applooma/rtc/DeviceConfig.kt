@@ -26,6 +26,8 @@ internal data class DeviceVideoConfig(
     val ttlSeconds: Long = DEFAULT_TTL_S,
     /** Server asks this device to upload its diagnostics after every call (`diag.enabled`). */
     val diagEnabled: Boolean = false,
+    /** False when the server turns the audio keep-alive off for this model (`audio.keepAlive: false`). */
+    val audioKeepAlive: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_TTL_S = 3600L
@@ -38,7 +40,8 @@ internal data class DeviceVideoConfig(
             val root = try { MiniJson(body ?: return null).parse() } catch (_: Throwable) { return null } as? Map<*, *> ?: return null
             val ttl = (root["ttlSeconds"] as? Number)?.toLong()?.takeIf { it > 0 } ?: DEFAULT_TTL_S
             val diag = (root["diag"] as? Map<*, *>)?.get("enabled") == true
-            val v = root["video"] as? Map<*, *> ?: return DeviceVideoConfig(ttlSeconds = ttl, diagEnabled = diag)
+            val keepAlive = (root["audio"] as? Map<*, *>)?.get("keepAlive") != false
+            val v = root["video"] as? Map<*, *> ?: return DeviceVideoConfig(ttlSeconds = ttl, diagEnabled = diag, audioKeepAlive = keepAlive)
             fun codec(key: String) = (v[key] as? String)?.lowercase()?.takeIf { it in CODECS }
             fun positive(key: String) = (v[key] as? Number)?.toInt()?.takeIf { it > 0 } ?: 0
             return DeviceVideoConfig(
@@ -53,6 +56,7 @@ internal data class DeviceVideoConfig(
                 h264ByteBuffer = v["h264ByteBuffer"] == true,
                 ttlSeconds = ttl,
                 diagEnabled = diag,
+                audioKeepAlive = keepAlive,
             )
         }
     }

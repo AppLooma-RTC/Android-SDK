@@ -3,6 +3,7 @@ package com.applooma.rtc
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
+import livekit.org.webrtc.audio.JavaAudioDeviceModule
 import android.media.MediaCodecList
 import android.os.Build
 import io.livekit.android.AudioOptions
@@ -121,6 +122,16 @@ class AppEngine private constructor(
         if (it != options.audioScenario) android.util.Log.w(TAG, "AppEngine.create: another engine is in a channel with audioScenario=$it; adopting it instead of ${options.audioScenario}")
     } ?: options.audioScenario
 
+    /**
+     * The SDK's own communication-mode keep-alive (see AudioKeepAlive). Built
+     * before the room because the audio module's playout callbacks feed it.
+     */
+    private val keepAlive = AudioKeepAlive(
+        communicationMode = !profileSettings.normalMode &&
+            (audioScenario != AppAudioScenario.MEDIA || MicCapture.mediaMode() == AudioManager.MODE_IN_COMMUNICATION),
+        log = { debug(it) },
+    )
+
     private val room: Room = LiveKit.create(
         context.applicationContext,
         options = roomOptions(options),
@@ -158,13 +169,19 @@ class AppEngine private constructor(
                     MicCapture.apply(builder, profileSettings)
                     // One hook serves music mixing and the (pre-processing) recording gain.
                     builder.setAudioBufferCallback(AudioBufferCallbackDispatcher().also { it.bufferCallback = mixer })
+                    // Playout start/stop drives the SDK's keep-alive. This replaces
+                    // the transport's callback, which only fed its own keep-alive
+                    // (always disabled below) and a log line.
+                    builder.setAudioTrackStateCallback(object : JavaAudioDeviceModule.AudioTrackStateCallback {
+                        override fun onWebRtcAudioTrackStart() = keepAlive.onPlayoutStarted()
+                        override fun onWebRtcAudioTrackStop() = keepAlive.onPlayoutStopped()
+                    })
                 },
                 audioProcessorOptions = AudioProcessorOptions(capturePostProcessor = micGain),
-                // The engine's call-mode keep-alive plays a silent 16 kHz voice
-                // track whenever playout is stopped. Harmless, but it is the
-                // 16 kHz track seen in audio dumps. Test-only switch to compare:
-                //   adb shell setprop debug.applooma.commkeepalive 0
-                disableCommunicationModeWorkaround = !MicCapture.flag("commkeepalive", true),
+                // The transport's own call-mode keep-alive is never used: it
+                // crashed the app on phones that refuse its silent track. The
+                // SDK runs its guarded AudioKeepAlive instead (see joinChannel).
+                disableCommunicationModeWorkaround = true,
             ),
         ),
     ).also { mixer.playoutUsage = if (profileSettings.normalMode || audioScenario == AppAudioScenario.MEDIA) AudioAttributes.USAGE_MEDIA else AudioAttributes.USAGE_VOICE_COMMUNICATION }
@@ -312,17 +329,22 @@ class AppEngine private constructor(
             val tree = object : timber.log.Timber.Tree() {
                 override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
                     val level = when (priority) { android.util.Log.ERROR -> "E"; android.util.Log.WARN -> "W"; android.util.Log.INFO -> "I"; android.util.Log.DEBUG -> "D"; else -> "V" }
-                    sink("$level/${tag ?: "engine"}: $message${t?.let { " — $it" } ?: ""}")
+                    sink(whiteLabel("$level/${tag ?: "engine"}: $message${t?.let { " — $it" } ?: ""}"))
                 }
             }
             debugTree = tree
             timber.log.Timber.plant(tree)
         }
 
+        private val ENGINE_NAME = Regex("(?i)live[ _-]?kit")
+
+        /** Lines handed to the app never carry the transport's name (white-label rule). */
+        internal fun whiteLabel(line: String): String = ENGINE_NAME.replace(line, "rtc")
+
         /** SDK log line: always kept in the diagnostics ring, and passed to the app's sink when debug logging is on. */
         internal fun debug(line: String) {
             Diagnostics.log(line)
-            debugSink?.invoke("I/$TAG: $line")
+            debugSink?.invoke(whiteLabel("I/$TAG: $line"))
         }
 
         /** Whether this phone has a hardware encoder for the given MIME type. */
@@ -599,6 +621,10 @@ class AppEngine private constructor(
         joinWsUrl = wsUrl
         publisherRelayTried = false
         Diagnostics.beginSession(appContext, token)
+        // App option, per-model server rule, and the test switch
+        // (adb shell setprop debug.applooma.commkeepalive 0) must all allow it.
+        keepAlive.forceFailure = MicCapture.flag("keepalivefail", false)
+        keepAlive.start(this.options.audio.audioKeepAlive && DeviceTelemetry.current.audioKeepAlive && MicCapture.flag("commkeepalive", true))
         armTokenTimer(token)
         // Device tuning: this join uses the cached answer (already in the room
         // options); a fresh one is fetched in the background and applies to
@@ -800,6 +826,7 @@ class AppEngine private constructor(
         tokenTimer?.cancel(); tokenTimer = null
         resetFallbacks()
         mixer.stop()
+        keepAlive.stop()
         statsJob?.cancel(); statsJob = null
         room.disconnect()
         isJoined = false
@@ -1989,6 +2016,7 @@ class AppEngine private constructor(
                     } else {
                         debug("disconnected reason=${event.reason?.name} error=${event.error}")
                         Diagnostics.endSession("disconnected")
+                        keepAlive.stop()
                         isJoined = false
                         tokenTimer?.cancel(); tokenTimer = null
                         resetFallbacks()
@@ -2333,6 +2361,7 @@ class AppEngine private constructor(
         stopNetworkTest()
         leaveChannel()
         SharedAudio.unlisten(this)
+        keepAlive.release()
         AppLoomaVideoEncoderFactory.removeFailureListener(encoderFailureListener)
         scope.launch { room.release() }
     }

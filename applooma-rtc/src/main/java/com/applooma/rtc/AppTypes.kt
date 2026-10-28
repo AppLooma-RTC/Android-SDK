@@ -196,6 +196,17 @@ data class AppAudioOptions @JvmOverloads constructor(
      * Since 0.4.21.
      */
     val profile: AppAudioProfile = AppAudioProfile.HD_VOICE,
+    /**
+     * Keeps the phone in call audio mode while nobody is speaking, by playing
+     * a silent track. Without it, Android 11 and later can drop call mode after
+     * a few quiet seconds and the audio route jumps. On by default.
+     *
+     * If a phone refuses the silent track, the SDK logs it and turns the
+     * keep-alive off by itself; the call is not affected. Set false to never
+     * use it. AppLooma can also turn it off for specific phone models from the
+     * server. Since 0.4.25.
+     */
+    val audioKeepAlive: Boolean = true,
 ) {
     /** The mode in force once [noiseSuppression] and [noiseSuppressionMode] are combined. */
     val effectiveNoiseSuppression: AppNoiseSuppression

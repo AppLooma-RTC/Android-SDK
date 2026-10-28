@@ -85,4 +85,11 @@ class DeviceConfigTest {
         assertFalse(off.h264Codec2); assertFalse(off.h264ByteBuffer)
         assertFalse(DeviceVideoConfig.EMPTY.h264Codec2)
     }
+
+    @Test fun audioKeepAliveFromServer() {
+        assertTrue(DeviceVideoConfig.parse("""{"video":{}}""")!!.audioKeepAlive)
+        assertFalse(DeviceVideoConfig.parse("""{"audio":{"keepAlive":false}}""")!!.audioKeepAlive)
+        assertFalse(DeviceVideoConfig.parse("""{"audio":{"keepAlive":false},"video":{"maxFps":20}}""")!!.audioKeepAlive)
+        assertTrue(DeviceVideoConfig.parse("""{"audio":{}}""")!!.audioKeepAlive)
+    }
 }
