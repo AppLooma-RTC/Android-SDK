@@ -1,5 +1,11 @@
 # Changelog
 
+## rtc-android 0.6.1 · uikit-android 0.2.21 · beauty-android 0.1.3 — 2026-10-29
+
+- Faster recovery on a weak network: each reconnect attempt now gives up within about 12 s and the next one starts on a fresh connection, and a 10 s keep-alive ping notices a dead link early. Before, one attempt could hang for 40 s and more on a bad Wi-Fi (seen on realme RMX3941). Use `onReconnecting` / `onReconnected` to show a "Reconnecting…" banner.
+- beauty-android 0.1.3: `AppBeauty.create` no longer freezes a slow phone. The face model loads on a background thread; frames before it is ready are drawn without face tracking (fixes an ANR on Infinix).
+- uikit-android 0.2.21: built on rtc-android 0.6.1.
+
 ## rtc-android 0.6.0 · uikit-android 0.2.20 — 2026-10-29
 
 - Room acoustics: `setAudioEffectPreset(AppAudioEffect)` with 8 rooms (KTV, CONCERT, STUDIO, PHONOGRAPH, STEREO, SPACIAL, ETHEREAL, VOICE_3D), keys `ktv concert studio phonograph stereo spacial ethereal 3d`. A reverb everyone in the room hears; no added delay.

@@ -142,6 +142,7 @@ class AppEngine private constructor(
         context.applicationContext,
         options = roomOptions(options),
         overrides = LiveKitOverrides(
+            okHttpClient = signalHttp,
             // Our own encoder factory: hardware H.264/VP8/H.265 on MediaTek,
             // Unisoc, HiSilicon and Codec2-only Qualcomm phones too, not just
             // the two vendors the engine's stock factory accepts. It shares one
@@ -290,6 +291,26 @@ class AppEngine private constructor(
                 val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime) != null
                 AppVideoCodecCapability(mime = name, hardware = hw, encoder = hw || software, decoder = software || hasDecoder(mime))
             }
+        }
+
+        /**
+         * HTTP client for the signalling connection. The transport's default
+         * client has no overall deadline, so on a weak Wi-Fi a reconnect attempt
+         * could hang on one dead connection for 40 s and more (realme RMX3941)
+         * before the next attempt. With these deadlines each attempt gives up
+         * within about 12 s and the reconnect policy tries again on a fresh
+         * connection; a WebSocket ping every 10 s notices a dead link early.
+         * Once connected the socket has no read deadline (OkHttp clears it for
+         * WebSockets), so a quiet room is never dropped.
+         */
+        internal val signalHttp: okhttp3.OkHttpClient by lazy {
+            okhttp3.OkHttpClient.Builder()
+                .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                .callTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+                .pingInterval(10, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
         }
 
         private val nextEngineNo = java.util.concurrent.atomic.AtomicInteger(0)
