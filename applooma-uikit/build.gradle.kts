@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.2.19"
+version = "0.2.20"
 
 android {
     namespace = "com.applooma.uikit"

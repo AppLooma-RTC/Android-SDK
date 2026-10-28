@@ -52,16 +52,35 @@ internal class VoiceChanger(val sampleRate: Int) {
     private val psola = Psola(rate)
     private var ringPhase = 0.0
 
+    @Volatile private var styleTarget: AppVoiceStyle = AppVoiceStyle.OFF
+    private var styleCurrent: AppVoiceStyle = AppVoiceStyle.OFF
+    @Volatile private var roomTarget: AppAudioEffect = AppAudioEffect.OFF
+    private var roomCurrent: AppAudioEffect = AppAudioEffect.OFF
+    private val styleStage = VoiceEffects.StyleStage(rate)
+    private val roomStage = VoiceEffects.RoomStage(rate)
+
     /** Safe from any thread; applied at the start of the next buffer. */
     fun set(changer: AppVoiceChanger) { target = changer }
+    fun setStyle(style: AppVoiceStyle) { styleTarget = style }
+    fun setRoom(effect: AppAudioEffect) { roomTarget = effect }
 
-    val active: Boolean get() = target != AppVoiceChanger.OFF
+    val active: Boolean get() = target != AppVoiceChanger.OFF || styleTarget != AppVoiceStyle.OFF || roomTarget != AppAudioEffect.OFF
 
-    /** True while a preset is on or still being switched off (state to reset). */
-    val busy: Boolean get() = target != AppVoiceChanger.OFF || current != AppVoiceChanger.OFF
+    /** True while any stage is on or still being switched off (state to reset). */
+    val busy: Boolean get() = active || current != AppVoiceChanger.OFF || styleCurrent != AppVoiceStyle.OFF || roomCurrent != AppAudioEffect.OFF
 
-    /** Processes [n] samples of [x] in place. */
+    /** Processes [n] samples of [x] in place: voice changer, then voice style, then room acoustics. */
     fun process(x: FloatArray, n: Int) {
+        processChanger(x, n)
+        val st = styleTarget
+        if (st != styleCurrent) { styleCurrent = st; styleStage.set(VoiceEffects.STYLES[st]) }
+        if (styleCurrent != AppVoiceStyle.OFF) styleStage.process(x, n)
+        val rt = roomTarget
+        if (rt != roomCurrent) { roomCurrent = rt; roomStage.set(VoiceEffects.ROOMS[rt]) }
+        if (roomCurrent != AppAudioEffect.OFF) roomStage.process(x, n)
+    }
+
+    private fun processChanger(x: FloatArray, n: Int) {
         val t = target
         if (t != current) {
             current = t
@@ -216,6 +235,7 @@ internal class VoiceChanger(val sampleRate: Int) {
         private var anal = 0.0
         private var period = 0
         private var sinceDetect = 0
+        private var snap = false
         private val hop = rate / 100
         private val dec = FloatArray(2 * tMax / DEC + 2)
 
@@ -224,7 +244,13 @@ internal class VoiceChanger(val sampleRate: Int) {
             w = 0L; synth = 0.0; anal = 0.0; period = 0; sinceDetect = 0
         }
 
-        fun process(x: FloatArray, n: Int, ratio: Float) {
+        /**
+         * With [autotune] the ratio is not fixed: each voiced grain is moved to
+         * the nearest semitone (A4 = 440 Hz), a hard snap, the "electronic"
+         * auto-tune sound. [ratio] is then ignored.
+         */
+        fun process(x: FloatArray, n: Int, ratio: Float, autotune: Boolean = false) {
+            snap = autotune
             for (i in 0 until n) {
                 inBuf[(w and mask).toInt()] = x[i]
                 w++
@@ -240,7 +266,14 @@ internal class VoiceChanger(val sampleRate: Int) {
 
         private fun grain(ratio: Float) {
             val t = if (period > 0) period else tUnvoiced
-            val r = if (period > 0) ratio.toDouble() else 1.0
+            val r = when {
+                period <= 0 -> 1.0
+                snap -> {
+                    val semis = 12.0 * kotlin.math.ln(rate.toDouble() / period / 440.0) / kotlin.math.ln(2.0)
+                    2.0.pow((kotlin.math.round(semis) - semis) / 12.0)
+                }
+                else -> ratio.toDouble()
+            }
             // The latest analysis mark at or before the synthesis mark, on the
             // chain of marks one period apart (keeps the grains in phase).
             if (anal > synth) anal = synth

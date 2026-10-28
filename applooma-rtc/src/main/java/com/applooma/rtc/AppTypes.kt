@@ -867,3 +867,75 @@ enum class AppVoiceChanger(val key: String) {
             values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: OFF
     }
 }
+
+/**
+ * Room acoustics: places the voice in a space (karaoke room, concert hall,
+ * studio…) with a reverb, sent to everyone in the room. Combines with
+ * [AppVoiceChanger] and [AppVoiceStyle]. `key` is a stable short name for
+ * saving the choice; it never changes between versions. Since 0.6.0.
+ */
+enum class AppAudioEffect(val key: String) {
+    /** No room effect. */
+    OFF("off"),
+    /** A karaoke room: warm, medium reverb. */
+    KTV("ktv"),
+    /** A live concert hall: large, with early echoes. */
+    CONCERT("concert"),
+    /** A recording studio: a small, tight room. */
+    STUDIO("studio"),
+    /** An old gramophone record: narrow, warm and slightly gritty. */
+    PHONOGRAPH("phonograph"),
+    /** A wide voice with close reflections (the send is mono: width in time, not channels). */
+    STEREO("stereo"),
+    /** A very large, open space. */
+    SPACIAL("spacial"),
+    /** Dreamy, long and airy. */
+    ETHEREAL("ethereal"),
+    /** A voice that seems to move around the listener. */
+    VOICE_3D("3d");
+
+    companion object {
+        /** The preset for a stored [key]; unknown or null keys give [OFF]. */
+        @JvmStatic fun fromKey(key: String?): AppAudioEffect =
+            values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: OFF
+    }
+}
+
+/**
+ * Voice style: tone shaping that flatters the voice (EQ and a gentle
+ * compressor), plus AUTOTUNE, which snaps the pitch to the nearest note.
+ * Sent to everyone in the room; combines with [AppVoiceChanger] and
+ * [AppAudioEffect]. `key` is a stable short name. Since 0.6.0.
+ */
+enum class AppVoiceStyle(val key: String) {
+    /** No styling. */
+    OFF("off"),
+    /** Warm, full, low-mid weight: a radio-host voice. */
+    MAGNETIC("magnetic"),
+    /** Light and bright. */
+    FRESH("fresh"),
+    /** Energetic, forward. */
+    VITALITY("vitality"),
+    /** More bass, darker top. */
+    DEEP("deep"),
+    /** Soft and smooth. */
+    MELLOW("mellow"),
+    /** Crisp and intelligible. */
+    CLEAR("clear"),
+    /** Full and resonant, with a little room. */
+    RESOUNDING("resounding"),
+    /** Bright and ringing. */
+    RINGING("ringing"),
+    /** A polished pop vocal. */
+    POP("pop"),
+    /** A warm R&B vocal. */
+    RNB("rnb"),
+    /** Electronic auto-tune: the pitch snaps to the nearest note. */
+    AUTOTUNE("autotune");
+
+    companion object {
+        /** The preset for a stored [key]; unknown or null keys give [OFF]. */
+        @JvmStatic fun fromKey(key: String?): AppVoiceStyle =
+            values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: OFF
+    }
+}

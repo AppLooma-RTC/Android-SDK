@@ -1782,6 +1782,23 @@ class AppEngine private constructor(
     val voiceChangerPreset: AppVoiceChanger get() = micGain.voicePreset
 
     /**
+     * Places the voice in a room — KTV, CONCERT, STUDIO and so on (see
+     * [AppAudioEffect]) — with a reverb everyone in the room hears. OFF removes
+     * it. Combines with the voice changer and voice style. Works before or
+     * after joining and takes effect within 10 ms. No added delay. Since 0.6.0.
+     */
+    fun setAudioEffectPreset(effect: AppAudioEffect) { micGain.roomPreset = effect }
+    val audioEffectPreset: AppAudioEffect get() = micGain.roomPreset
+
+    /**
+     * Styles the voice — MAGNETIC, CLEAR, POP and so on, or AUTOTUNE (see
+     * [AppVoiceStyle]). OFF removes it. Combines with the voice changer and
+     * room acoustics. No added delay, except AUTOTUNE (about 27 ms). Since 0.6.0.
+     */
+    fun setVoiceStylePreset(style: AppVoiceStyle) { micGain.stylePreset = style }
+    val voiceStylePreset: AppVoiceStyle get() = micGain.stylePreset
+
+    /**
      * Lets the speaker hear their own voice, with the voice changer and every
      * other microphone effect applied, while they talk. Only plays while the
      * call is on headphones (wired or Bluetooth): on the loudspeaker it would
@@ -2433,13 +2450,16 @@ internal class MicProcessor(
 
     /** Voice changer preset (see VoiceChanger); applied after noise handling, before gain. */
     @Volatile var voicePreset: AppVoiceChanger = AppVoiceChanger.OFF
+    /** Voice style and room acoustics, run by the same VoiceChanger after the changer. */
+    @Volatile var stylePreset: AppVoiceStyle = AppVoiceStyle.OFF
+    @Volatile var roomPreset: AppAudioEffect = AppAudioEffect.OFF
     /** In-ear monitoring sink, fed with the final processed microphone. */
     @Volatile var ear: EarMonitor? = null
     @Volatile private var rate = 48_000
     private var voice: VoiceChanger? = null
     private var scratch = FloatArray(960)
 
-    override fun isEnabled(): Boolean = voicePreset != AppVoiceChanger.OFF || voice?.active == true || ear?.enabled == true || CaptureProbes.sent.active || AudioDump.enabled || clearVoice || gainPercent != 100 || fixedGain != 1f || ceiling < 1f || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
+    override fun isEnabled(): Boolean = voicePreset != AppVoiceChanger.OFF || stylePreset != AppVoiceStyle.OFF || roomPreset != AppAudioEffect.OFF || voice?.active == true || ear?.enabled == true || CaptureProbes.sent.active || AudioDump.enabled || clearVoice || gainPercent != 100 || fixedGain != 1f || ceiling < 1f || gateThresholdDbfs > Float.NEGATIVE_INFINITY || agcTargetDbfs != 0
     override fun getName(): String = "applooma-mic"
     override fun initializeAudioProcessing(sampleRateHz: Int, numChannels: Int) { gateGain = 1f; agcGain = 1f; if (sampleRateHz > 0) rate = sampleRateHz }
     override fun resetAudioProcessing(newRate: Int) { gateGain = 1f; agcGain = 1f; if (newRate > 0) rate = newRate }
@@ -2491,6 +2511,8 @@ internal class MicProcessor(
         var v = voice
         if (v == null || v.rate != rate) { v = VoiceChanger(rate); voice = v }
         v.set(voicePreset)
+        v.setStyle(stylePreset)
+        v.setRoom(roomPreset)
         if (v.busy) {
             if (scratch.size < n) scratch = FloatArray(n)
             for (i in 0 until n) scratch[i] = fb.get(i) / scale
