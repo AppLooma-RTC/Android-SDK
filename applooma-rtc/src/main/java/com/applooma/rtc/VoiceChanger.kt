@@ -31,8 +31,16 @@ internal class VoiceChanger(val sampleRate: Int) {
         val ringHz: Float = 0f,
         val ringMix: Float = 0f,
         val drive: Float = 0f,
+        /**
+         * Pitch moved without moving the formants (see [Psola]), on top of
+         * [semitones], which moves both. A real female voice is about 7
+         * semitones above a male one but her vocal tract only ~15 % shorter;
+         * moving both by 7 gives a child or cartoon instead.
+         */
+        val voiceSemitones: Float = 0f,
     ) {
         val ratio: Float get() = 2f.pow(semitones / 12f)
+        val voiceRatio: Float get() = 2f.pow(voiceSemitones / 12f)
     }
 
     val rate = if (sampleRate > 0) sampleRate else 48_000
@@ -41,6 +49,7 @@ internal class VoiceChanger(val sampleRate: Int) {
     private var preset = Preset()
     private var filters: List<Biquad> = emptyList()
     private val shifter = PitchShifter(rate)
+    private val psola = Psola(rate)
     private var ringPhase = 0.0
 
     /** Safe from any thread; applied at the start of the next buffer. */
@@ -59,10 +68,12 @@ internal class VoiceChanger(val sampleRate: Int) {
             preset = PRESETS[t] ?: Preset()
             filters = preset.filters.map { Biquad(it, rate) }
             shifter.reset()
+            psola.reset()
             ringPhase = 0.0
         }
         if (current == AppVoiceChanger.OFF) return
         val p = preset
+        if (p.voiceSemitones != 0f) psola.process(x, n, p.voiceRatio)
         if (p.semitones != 0f) shifter.process(x, n, p.ratio)
         for (f in filters) f.process(x, n)
         if (p.ringMix > 0f) {
@@ -176,6 +187,139 @@ internal class VoiceChanger(val sampleRate: Int) {
         }
     }
 
+    /**
+     * Pitch-synchronous overlap-add (TD-PSOLA): raises or lowers the pitch
+     * while the formants (the shape of the mouth and throat, which tell a man
+     * from a woman as much as the pitch does) stay where they are.
+     *
+     * Every 10 ms the period is measured by normalised autocorrelation (on a
+     * 4x decimated copy, refined at full rate). Grains two periods long,
+     * Hann-windowed and centred one period apart in the input, are laid down
+     * [ratio] times closer together in the output: the repetition rate, which
+     * is the pitch, changes, while each grain keeps its own spectrum.
+     * Unvoiced sound (s, f, breath) and silence are passed through with 5 ms
+     * grains at their own spacing, which reconstructs them unchanged.
+     *
+     * Adds a fixed delay of two longest periods (75 Hz), about 27 ms.
+     */
+    internal class Psola(private val rate: Int) {
+        private val tMax = rate / F_MIN
+        private val tMin = rate / F_MAX
+        private val tUnvoiced = rate / 200
+        val latencySamples: Int = 2 * tMax
+        private val size = Integer.highestOneBit(latencySamples * 4) * 2
+        private val mask = (size - 1).toLong()
+        private val inBuf = FloatArray(size)
+        private val outBuf = FloatArray(size)
+        private var w = 0L
+        private var synth = 0.0
+        private var anal = 0.0
+        private var period = 0
+        private var sinceDetect = 0
+        private val hop = rate / 100
+        private val dec = FloatArray(2 * tMax / DEC + 2)
+
+        fun reset() {
+            inBuf.fill(0f); outBuf.fill(0f)
+            w = 0L; synth = 0.0; anal = 0.0; period = 0; sinceDetect = 0
+        }
+
+        fun process(x: FloatArray, n: Int, ratio: Float) {
+            for (i in 0 until n) {
+                inBuf[(w and mask).toInt()] = x[i]
+                w++
+                if (++sinceDetect >= hop) { sinceDetect = 0; period = detect() }
+                val e = w - latencySamples
+                while (synth <= e + tMax) grain(ratio)
+                if (e < 0) { x[i] = 0f; continue }
+                val k = (e and mask).toInt()
+                x[i] = outBuf[k]
+                outBuf[k] = 0f
+            }
+        }
+
+        private fun grain(ratio: Float) {
+            val t = if (period > 0) period else tUnvoiced
+            val r = if (period > 0) ratio.toDouble() else 1.0
+            // The latest analysis mark at or before the synthesis mark, on the
+            // chain of marks one period apart (keeps the grains in phase).
+            if (anal > synth) anal = synth
+            else anal += kotlin.math.floor((synth - anal) / t) * t
+            val a = anal.toLong()
+            val s = synth.toLong()
+            // Windows 2t long laid every t/r overlap r-fold: scale back to unity.
+            val g = (1.0 / r).toFloat()
+            val step = FADE_N.toFloat() / (2 * t)
+            for (j in -t until t) {
+                // Hann over [-t, t): sin²(π (j + t) / 2t)
+                val win = FADE[((j + t) * step).toInt()]
+                val o = ((s + j) and mask).toInt()
+                outBuf[o] += inBuf[((a + j) and mask).toInt()] * win * g
+            }
+            synth += t / r
+        }
+
+        /** Period in samples of the newest 2·tMax of input, or 0 if unvoiced. */
+        private fun detect(): Int {
+            val len = 2 * tMax / DEC
+            val start = w - 2 * tMax
+            var energy = 0.0
+            for (k in 0 until len) {
+                var s = 0f
+                for (d in 0 until DEC) s += inBuf[((start + k * DEC + d) and mask).toInt()]
+                dec[k] = s / DEC
+                energy += dec[k] * dec[k]
+            }
+            if (energy / len < SILENCE) return 0
+            val half = len / 2
+            val lo = tMin / DEC; val hi = minOf(tMax / DEC, half)
+            val nccf = FloatArray(hi + 2)
+            var best = 0f
+            for (lag in lo..hi) {
+                var c = 0.0; var e0 = 1e-12; var e1 = 1e-12
+                for (k in 0 until half) {
+                    val a = dec[k]; val b = dec[k + lag]
+                    c += a * b; e0 += a * a; e1 += b * b
+                }
+                nccf[lag] = (c / sqrt(e0 * e1)).toFloat()
+                if (nccf[lag] > best) best = nccf[lag]
+            }
+            if (best < VOICED) return 0
+            // The shortest lag that is a local peak close to the best one:
+            // avoids locking onto twice the period.
+            var lag = lo
+            for (l in lo + 1 until hi) {
+                if (nccf[l] >= nccf[l - 1] && nccf[l] >= nccf[l + 1] && nccf[l] >= best * OCTAVE) { lag = l; break }
+            }
+            // Refine at full rate around the coarse lag.
+            val end = w
+            val nFull = tMax
+            var bestFull = lag * DEC; var bestScore = Double.NEGATIVE_INFINITY
+            for (p in maxOf(tMin, lag * DEC - DEC)..minOf(tMax, lag * DEC + DEC)) {
+                var c = 0.0; var e0 = 1e-12; var e1 = 1e-12
+                for (k in 0 until nFull) {
+                    val a = inBuf[((end - 1 - k) and mask).toInt()]
+                    val b = inBuf[((end - 1 - k - p) and mask).toInt()]
+                    c += a * b; e0 += a * a; e1 += b * b
+                }
+                val sc = c / sqrt(e0 * e1)
+                if (sc > bestScore) { bestScore = sc; bestFull = p }
+            }
+            return bestFull
+        }
+
+        private companion object {
+            const val F_MIN = 75
+            const val F_MAX = 500
+            const val DEC = 4
+            const val VOICED = 0.5f
+            const val OCTAVE = 0.85f
+            const val SILENCE = 1e-6 // about -60 dBFS
+            const val FADE_N = 1024
+            val FADE = FloatArray(FADE_N + 1) { sin(PI * it / FADE_N).let { s -> (s * s).toFloat() } }
+        }
+    }
+
         /** RBJ cookbook biquad, direct form I. */
     internal class Biquad(spec: Spec, rate: Int) {
         enum class Type { LOW_SHELF, HIGH_SHELF, PEAK, LOW_PASS, HIGH_PASS }
@@ -229,7 +373,10 @@ internal class VoiceChanger(val sampleRate: Int) {
          */
         val PRESETS: Map<AppVoiceChanger, Preset> = mapOf(
             AppVoiceChanger.BABY to Preset(7f, listOf(ls(220f, -5f), hs(3000f, 3f))),
-            AppVoiceChanger.FEMALE to Preset(4f, listOf(ls(250f, -3f), pk(3000f, 2f))),
+            // Pitch up 7.5 semitones (a 120 Hz man lands near 185 Hz), formants
+            // only 2.5 of them (~15 %, a shorter vocal tract), less chest, a
+            // little air on top.
+            AppVoiceChanger.FEMALE to Preset(2.5f, listOf(hp(110f), ls(300f, -2f), hs(5000f, 3f)), voiceSemitones = 5f),
             AppVoiceChanger.MALE to Preset(-3f, listOf(ls(160f, 3f))),
             AppVoiceChanger.DEEP_MALE to Preset(-6f, listOf(ls(130f, 5f), hs(6000f, -3f))),
             AppVoiceChanger.NEUTRAL to Preset(2f, listOf(ls(200f, -2f), pk(1500f, -2f))),

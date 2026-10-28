@@ -56,7 +56,7 @@ class VoiceChangerTest {
             if (p.ringMix > 0f) continue // ring modulation adds sidebands; checked separately
             val vc = VoiceChanger(rate).apply { set(preset) }
             val out = run(vc, sine(200.0))
-            val want = 200.0 * 2.0.pow(p.semitones / 12.0)
+            val want = 200.0 * 2.0.pow((p.semitones + p.voiceSemitones) / 12.0)
             val got = pitch(out)
             if (abs(got - want) / want >= 0.02) misses += "$preset wanted ${"%.1f".format(want)} got ${"%.1f".format(got)}"
         }
@@ -110,6 +110,53 @@ class VoiceChangerTest {
             while (i + buf.size <= x.size) { System.arraycopy(x, i, buf, 0, buf.size); vc.process(buf, buf.size); System.arraycopy(buf, 0, x, i, buf.size); i += buf.size }
             assertTrue(x.none { it.isNaN() })
         }
+    }
+
+    /** A 125 Hz buzz through one formant at 700 Hz: the strongest frequency between 300 and 1500 Hz. */
+    private fun formantPeak(x: FloatArray): Double {
+        val from = x.size / 2
+        var bestHz = 0.0; var bestPow = -1.0
+        var hz = 300.0
+        while (hz <= 1500.0) {
+            val k = 2 * kotlin.math.cos(2 * PI * hz / rate)
+            var s1 = 0.0; var s2 = 0.0
+            for (i in from until x.size) { val s0 = x[i] + k * s1 - s2; s2 = s1; s1 = s0 }
+            val pw = s1 * s1 + s2 * s2 - k * s1 * s2
+            if (pw > bestPow) { bestPow = pw; bestHz = hz }
+            hz += 1.0
+        }
+        return bestHz
+    }
+
+    private fun buzz(): FloatArray {
+        val period = rate / 125
+        val x = FloatArray(rate) { if (it % period == 0) 0.5f else 0f }
+        VoiceChanger.Biquad(VoiceChanger.Biquad.Spec(VoiceChanger.Biquad.Type.PEAK, 700f, 30f, 6f), rate).process(x, x.size)
+        val peak = x.maxOf { abs(it) }
+        for (i in x.indices) x[i] *= 0.3f / peak
+        return x
+    }
+
+    @Test fun psolaMovesPitchButKeepsTheFormant() {
+        val ps = VoiceChanger.Psola(rate)
+        val x = buzz()
+        val frame = rate / 100
+        val buf = FloatArray(frame)
+        var i = 0
+        while (i + frame <= x.size) { System.arraycopy(x, i, buf, 0, frame); ps.process(buf, frame, 2f.pow(5f / 12f)); System.arraycopy(buf, 0, x, i, frame); i += frame }
+        val f = formantPeak(x)
+        assertTrue("formant moved to $f Hz", f in 600.0..820.0)
+    }
+
+    @Test fun femaleKeepsTheVoiceAdult() {
+        // Formants may rise ~15 %, not the ~55 % a plain 7.5-semitone shift would give.
+        val f = formantPeak(run(VoiceChanger(rate).apply { set(AppVoiceChanger.FEMALE) }, buzz()))
+        assertTrue("female formant at $f Hz", f in 700.0..950.0)
+    }
+
+    @Test fun psolaDelayStaysUnder30ms() {
+        val ms = VoiceChanger.Psola(rate).latencySamples * 1000.0 / rate
+        assertTrue("psola delay $ms ms", ms < 30.0)
     }
 
     @Test fun keysMatchTheIntegrationGuide() {
