@@ -14,8 +14,10 @@ enum class AppRole { HOST, COHOST, AUDIENCE }
  * CALL routes voice through the phone's communication path: echo cancellation
  * tuned for speech, the earpiece by default, volume keys control the call.
  * MEDIA treats the session like a music player: wider bandwidth, the
- * loudspeaker by default, media volume keys. Voice rooms with music and live
- * streams sound better on MEDIA; a private call belongs on CALL.
+ * loudspeaker by default, media volume keys, with echo cancellation and
+ * noise suppression still on. Use MEDIA for voice rooms and live streams:
+ * on the loudspeaker CALL plays everyone through the phone's narrow
+ * voice-call path. A private 1-to-1 call belongs on CALL.
  */
 enum class AppAudioScenario { CALL, MEDIA }
 
@@ -241,7 +243,7 @@ enum class AppAudioProfile {
      * HD voice (default) for live streams, voice rooms and loudspeaker calls:
      * 48 kHz voice capture with the phone's and the engine's echo
      * cancelling, noise suppression and AGC, call audio mode, high-pass
-     * filter, mono Opus 64 kbps. Clear Voice ([AppNoiseSuppression.CLEAR]),
+     * filter, mono Opus 128 kbps (64 kbps before 0.6.0). Clear Voice ([AppNoiseSuppression.CLEAR]),
      * the noise gate and micGain still apply.
      */
     HD_VOICE,

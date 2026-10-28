@@ -566,7 +566,7 @@ class AppEngine private constructor(
                     highPassFilter = MicCapture.flag("hpf", ap.highPassFilter),
                     typingNoiseDetection = false,
                 ),
-                audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = ap.bitrate, dtx = ap.dtx, red = ap.red),
+                audioTrackPublishDefaults = AudioTrackPublishDefaults(audioBitrate = MicCapture.prop("debug.applooma.abitrate")?.toIntOrNull()?.takeIf { it in 16_000..256_000 } ?: ap.bitrate, dtx = ap.dtx, red = ap.red),
             )
         }
 

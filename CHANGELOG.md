@@ -1,5 +1,14 @@
 # Changelog
 
+## rtc-android 0.6.0 · uikit-android 0.2.20 — 2026-10-29
+
+- Room acoustics: `setAudioEffectPreset(AppAudioEffect)` with 8 rooms (KTV, CONCERT, STUDIO, PHONOGRAPH, STEREO, SPACIAL, ETHEREAL, VOICE_3D), keys `ktv concert studio phonograph stereo spacial ethereal 3d`. A reverb everyone in the room hears; no added delay.
+- Voice style: `setVoiceStylePreset(AppVoiceStyle)` with 11 styles (MAGNETIC, FRESH, VITALITY, DEEP, MELLOW, CLEAR, RESOUNDING, RINGING, POP, RNB, AUTOTUNE), keys `magnetic fresh vitality deep mellow clear resounding ringing pop rnb autotune`. EQ and a gentle compressor; AUTOTUNE snaps the pitch to the nearest note (about 27 ms added delay).
+- Voice changer, voice style and room acoustics combine (applied in that order).
+- HD_VOICE now sends mono Opus at 128 kbps (was 64 kbps): noticeably clearer voice on the loudspeaker.
+- Voice rooms: use `AppAudioScenario.MEDIA` (as for live streams). CALL plays everyone through the phone's voice-call path, which sounds narrow on the loudspeaker; echo cancellation and noise suppression stay on with MEDIA.
+- uikit-android 0.2.20: built on rtc-android 0.6.0. No UIKit API changes.
+
 ## rtc-android 0.5.0 · uikit-android 0.2.19 — 2026-10-28
 
 - Voice changer: `setVoiceChangerPreset(AppVoiceChanger)` with 15 voices (BABY, FEMALE, MALE, DEEP_MALE, NEUTRAL, CARTOON, CHIPMUNK, SHIN_CHAN, GIRLISH_MAN, IRON_LADY, MONSTER, ROBOT, GROOT, DARTH_VADER, PHONE) and OFF. Everyone in the room hears it. Works before or after joining, switches instantly, survives role changes. Stable keys for storing the choice: `AppVoiceChanger.key` / `fromKey`. About 16 ms of added delay for pitch-changing voices; measured cost on a budget MediaTek phone is about 7 % of one core while a voice is on, nothing while OFF.
