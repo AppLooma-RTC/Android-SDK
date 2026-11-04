@@ -6,14 +6,14 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.6.5"
+version = "0.7.0"
 
 android {
     namespace = "com.applooma.rtc"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
-        minSdk = 23
+        minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
         buildConfigField("String", "SDK_VERSION", "\"${project.version}\"")
     }

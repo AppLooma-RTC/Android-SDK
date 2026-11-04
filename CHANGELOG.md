@@ -1,5 +1,12 @@
 # Changelog
 
+## rtc-android 0.7.0 · uikit-android 0.3.0 · beauty-android 0.2.0 — 2026-11-04
+
+- **Breaking:** minimum Android is now 7.0 (API 24), up from 6.0 (API 23), matching Google Play services. Apps with `minSdk 23` must raise it to 24.
+- Built against Android 16 (compileSdk 36) with Android Gradle Plugin 8.9.1. Google Play requires new apps and updates to target API 36; the SDK is tested there.
+- 16 KB page size: every native library the SDK ships or pulls in is 16 KB aligned.
+- No API changes from 0.6.5.
+
 ## rtc-android 0.6.5 · uikit-android 0.2.23 — 2026-11-04
 
 - `loadHistoryAsync(limit, before, AppHistoryCallback)`: stored chat from Java, result on the main thread.

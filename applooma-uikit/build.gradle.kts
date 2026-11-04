@@ -7,11 +7,11 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.2.23"
+version = "0.3.0"
 
 android {
     namespace = "com.applooma.uikit"
-    compileSdk = 34
+    compileSdk = 36
     defaultConfig { minSdk = 24 }
     buildFeatures { compose = true }
     compileOptions {
