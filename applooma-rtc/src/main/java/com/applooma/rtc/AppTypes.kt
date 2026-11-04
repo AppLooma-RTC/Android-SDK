@@ -516,7 +516,33 @@ data class AppMessage(
      * arrived on this phone (the sender's own timestamp is not trusted).
      */
     val sentAt: Date = Date(),
+    /**
+     * On a received message, the time the sending phone says it sent it, or null
+     * if it did not say. That phone's clock may be wrong, so show it if you like
+     * but order by arrival ([sentAt]).
+     */
+    val senderSentAt: Date? = null,
 )
+
+/** One message read back from stored chat (see [AppEngine.loadHistory]). */
+data class AppStoredMessage(
+    val id: String,
+    /** Who sent it, in your own identity space. */
+    val sender: String,
+    /** Their display name when they sent it. */
+    val senderName: String?,
+    /** Null when the message was recalled. */
+    val text: String?,
+    val data: Map<String, Any?>?,
+    val kind: String,
+    /** True for a recalled message. It keeps its place in the thread. */
+    val deleted: Boolean,
+    /** Server time, safe to order by. */
+    val createdAt: Date,
+)
+
+/** One page of stored chat, newest first. Pass [nextBefore] to get the older page; null means no more. */
+data class AppHistoryPage(val messages: List<AppStoredMessage>, val nextBefore: Date?)
 
 /** A remote user in the channel. */
 class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
@@ -941,3 +967,6 @@ enum class AppVoiceStyle(val key: String) {
             values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: OFF
     }
 }
+
+/** A request to the AppLooma service failed. [code] is stable, e.g. `CHAT_NOT_IN_PLAN`. */
+class AppException(val code: String, message: String) : Exception(message)

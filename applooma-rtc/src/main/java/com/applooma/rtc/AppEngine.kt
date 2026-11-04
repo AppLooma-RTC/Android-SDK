@@ -71,7 +71,18 @@ private fun parseMessage(frame: JSONObject, from: AppRemoteUser?): AppMessage {
         data = payload?.let { obj -> obj.keys().asSequence().associateWith { obj.opt(it) } },
         from = from,
         sentAt = Date(),
+        senderSentAt = parseIsoInstant(frame.optString("sentAt")),
     )
+}
+
+private fun parseIsoInstant(value: String?): Date? {
+    if (value.isNullOrEmpty()) return null
+    for (pattern in arrayOf("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'")) {
+        try {
+            return SimpleDateFormat(pattern, Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.parse(value)
+        } catch (_: Exception) {}
+    }
+    return null
 }
 
 /**
@@ -1651,6 +1662,60 @@ class AppEngine private constructor(
         }
         sendData(frame.toString().toByteArray(Charsets.UTF_8), reliable)
         return message
+    }
+
+    /**
+     * Read stored chat for the channel you joined, newest first. Only messages
+     * your server stored through the chat API are returned; [sendMessage] is not
+     * stored. Uses the token you joined with, so no server of yours is involved.
+     *
+     * Call it after [joinChannel]. For the next older page pass the returned
+     * `nextBefore`. Throws [AppException] if the plan has no stored chat
+     * (code `CHAT_NOT_IN_PLAN`) or the request fails.
+     */
+    @JvmOverloads
+    suspend fun loadHistory(limit: Int? = null, before: Date? = null): AppHistoryPage {
+        val token = joinToken ?: throw IllegalStateException("Join a channel before loading its history")
+        return withContext(Dispatchers.IO) {
+            val query = buildList {
+                limit?.let { add("limit=$it") }
+                before?.let { add("before=" + java.net.URLEncoder.encode(isoInstant(it), "UTF-8")) }
+            }.joinToString("&")
+            val conn = java.net.URL("${DeviceTelemetry.API_BASE}/chat/history?$query").openConnection() as java.net.HttpURLConnection
+            try {
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 15_000
+                conn.setRequestProperty("Authorization", "Bearer $token")
+                val status = conn.responseCode
+                val body = (if (status in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val json = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+                if (status !in 200..299) {
+                    throw AppException(
+                        json.optString("code").ifEmpty { "HISTORY_FAILED" },
+                        json.optString("error").ifEmpty { "Could not load history ($status)" },
+                    )
+                }
+                val list = json.optJSONArray("messages")
+                val messages = (0 until (list?.length() ?: 0)).map { i ->
+                    val m = list!!.getJSONObject(i)
+                    val payload = m.optJSONObject("data")
+                    AppStoredMessage(
+                        id = m.optString("id"),
+                        sender = m.optString("sender"),
+                        senderName = if (m.isNull("senderName")) null else m.optString("senderName"),
+                        text = if (m.isNull("text")) null else m.optString("text"),
+                        data = payload?.let { o -> o.keys().asSequence().associateWith { o.opt(it) } },
+                        kind = m.optString("kind"),
+                        deleted = m.optBoolean("deleted"),
+                        createdAt = parseIsoInstant(m.optString("createdAt")) ?: Date(0),
+                    )
+                }
+                AppHistoryPage(messages, if (json.isNull("nextBefore")) null else parseIsoInstant(json.optString("nextBefore")))
+            } finally {
+                conn.disconnect()
+            }
+        }
     }
 
     /** Broadcast raw bytes. Prefer sendMessage() unless you need your own format. Queued until joined. */

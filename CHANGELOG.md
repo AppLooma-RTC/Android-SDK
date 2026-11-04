@@ -1,5 +1,10 @@
 # Changelog
 
+## rtc-android 0.6.2 — 2026-11-04
+
+- Stored chat: `suspend fun loadHistory(limit, before): AppHistoryPage` reads the channel's stored chat with the join token, newest first; `nextBefore` pages back. Throws `AppException` (`CHAT_NOT_IN_PLAN` when the plan has no stored chat).
+- `AppMessage.senderSentAt`: the sending phone's own timestamp (nullable). `sentAt` stays the arrival time on this phone.
+
 ## rtc-android 0.6.1 · uikit-android 0.2.21 · beauty-android 0.1.3 — 2026-10-29
 
 - Faster recovery on a weak network: each reconnect attempt now gives up within about 12 s and the next one starts on a fresh connection, and a 10 s keep-alive ping notices a dead link early. Before, one attempt could hang for 40 s and more on a bad Wi-Fi (seen on realme RMX3941). Use `onReconnecting` / `onReconnected` to show a "Reconnecting…" banner.
