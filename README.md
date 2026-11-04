@@ -6,7 +6,7 @@ Real-time voice, video, live streaming and audio rooms by AppLooma LLC. Kotlin-f
 
 ```gradle
 dependencies {
-    implementation("com.applooma:rtc-android:0.4.22")
+    implementation("com.applooma:rtc-android:0.6.4")
 }
 ```
 
