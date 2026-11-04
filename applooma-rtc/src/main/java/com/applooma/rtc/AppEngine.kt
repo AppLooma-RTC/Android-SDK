@@ -658,6 +658,7 @@ class AppEngine private constructor(
         joinToken = token
         joinWsUrl = wsUrl
         publisherRelayTried = false
+        val epoch = joinEpoch.get()
         Diagnostics.beginSession(appContext, token)
         // App option, per-model server rule, and the test switch
         // (adb shell setprop debug.applooma.commkeepalive 0) must all allow it.
@@ -684,8 +685,14 @@ class AppEngine private constructor(
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
         }
         try {
-            connectWithProxy(wsUrl, token)
+            connectWithProxy(wsUrl, token, epoch)
         } catch (t: Throwable) {
+            if (epoch != joinEpoch.get()) {
+                // leaveChannel() or destroy() was called before the join finished
+                // (the user left the room within seconds). Not a failure.
+                debug("join abandoned: left before connected (${t.javaClass.simpleName})")
+                throw JoinAbandonedException(t)
+            }
             debug("join failed: ${t.javaClass.simpleName}: ${t.message}")
             Diagnostics.problem(DiagPolicy.PROBLEM_JOIN)
             Diagnostics.endSession("join failed")
@@ -828,7 +835,7 @@ class AppEngine private constructor(
         return true
     }
 
-    private suspend fun connectWithProxy(wsUrl: String, token: String) {
+    private suspend fun connectWithProxy(wsUrl: String, token: String, epoch: Long = joinEpoch.get()) {
         val mode = options.cloudProxy
         if (mode == AppCloudProxy.FORCE_TLS_443) {
             setProxyState(AppProxyState.CONNECTING, false)
@@ -839,7 +846,7 @@ class AppEngine private constructor(
         try {
             room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException || !ProxyPolicy.shouldRetry(mode, t)) throw t
+            if (t is kotlinx.coroutines.CancellationException || epoch != joinEpoch.get() || !ProxyPolicy.shouldRetry(mode, t)) throw t
             debug("direct join failed (${t.javaClass.simpleName}: ${t.message}); retrying once through the cloud proxy on TLS 443")
             android.util.Log.w(TAG, "Direct connection failed; retrying through the AppLooma cloud proxy (TLS 443)")
             proxyRetrying = true
@@ -858,11 +865,14 @@ class AppEngine private constructor(
     /** Java-friendly fire-and-forget variant. Success arrives as [AppEventHandler.onJoined]. */
     fun joinChannelAsync(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
         scope.launch {
-            try { joinChannel(token, wsUrl, options) } catch (t: Throwable) { debug("error: joinChannelAsync ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) }
+            try { joinChannel(token, wsUrl, options) }
+            catch (_: JoinAbandonedException) {}
+            catch (t: Throwable) { debug("error: joinChannelAsync ${t.javaClass.simpleName}: ${t.message}"); eventHandler?.onError(t) }
         }
     }
 
     fun leaveChannel() {
+        joinEpoch.incrementAndGet()
         if (previewTrack != null) onMain { endPreview() }
         if (isJoined) debug("leaveChannel")
         Diagnostics.endSession("leave")
@@ -1092,6 +1102,8 @@ class AppEngine private constructor(
 
     /* Anonymous device reports (DeviceTelemetry): at most one per outcome and codec per join. */
     @Volatile private var joinToken: String? = null
+    /** Bumped by leaveChannel(); a join that sees it change was abandoned, not failed. */
+    private val joinEpoch = AtomicLong()
     private val reportedOutcomes = HashSet<String>()
     private var healthySince = -1L
 

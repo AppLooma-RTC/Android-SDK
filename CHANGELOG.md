@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.6.3 — 2026-11-04
+
+- Leaving a room while it is still joining is no longer reported as a failed join. `joinChannel` throws `JoinAbandonedException` (a `CancellationException`); `joinChannelAsync` no longer calls `onError` for it, and the SDK no longer starts a pointless cloud-proxy retry. Before, quickly swiping through rooms showed up as "PeerConnectionFactory has been disposed" / "Job was cancelled" errors.
+
 ## rtc-android 0.6.2 — 2026-11-04
 
 - Stored chat: `suspend fun loadHistory(limit, before): AppHistoryPage` reads the channel's stored chat with the join token, newest first; `nextBefore` pages back. Throws `AppException` (`CHAT_NOT_IN_PLAN` when the plan has no stored chat).

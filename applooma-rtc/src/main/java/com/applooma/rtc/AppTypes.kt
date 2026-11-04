@@ -970,3 +970,13 @@ enum class AppVoiceStyle(val key: String) {
 
 /** A request to the AppLooma service failed. [code] is stable, e.g. `CHAT_NOT_IN_PLAN`. */
 class AppException(val code: String, message: String) : Exception(message)
+
+/**
+ * Thrown by [AppEngine.joinChannel] when [AppEngine.leaveChannel] or
+ * [AppEngine.destroy] was called before the join finished. The user left;
+ * nothing went wrong. [AppEngine.joinChannelAsync] does not report it to onError.
+ */
+class JoinAbandonedException internal constructor(cause: Throwable) :
+    kotlinx.coroutines.CancellationException("Left the channel before the join finished") {
+    init { initCause(cause) }
+}
