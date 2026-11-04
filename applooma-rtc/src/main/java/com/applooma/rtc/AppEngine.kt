@@ -698,6 +698,13 @@ class AppEngine private constructor(
             Diagnostics.endSession("join failed")
             throw t
         }
+        if (epoch != joinEpoch.get()) {
+            // Left while the connect was finishing: do not stay in the room as a
+            // second copy of this user (it would push the real session out).
+            debug("join abandoned: left while connecting; disconnecting")
+            try { room.disconnect() } catch (_: Throwable) {}
+            throw JoinAbandonedException(IllegalStateException("left during join"))
+        }
         isJoined = true
         debug("connected localUid=$localUid")
         eventHandler?.onConnectionStage(AppConnectionStage.CONNECTED, null, elapsedSinceJoin())

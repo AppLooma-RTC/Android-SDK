@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.6.4 — 2026-11-04
+
+- A join that finishes connecting after `leaveChannel()` / `destroy()` now disconnects at once instead of staying in the room. Before, that leftover connection used the same user id and could push the user's real session out (`DUPLICATE_IDENTITY`), which ended a host's live for viewers.
+
 ## rtc-android 0.6.3 — 2026-11-04
 
 - Leaving a room while it is still joining is no longer reported as a failed join. `joinChannel` throws `JoinAbandonedException` (a `CancellationException`); `joinChannelAsync` no longer calls `onError` for it, and the SDK no longer starts a pointless cloud-proxy retry. Before, quickly swiping through rooms showed up as "PeerConnectionFactory has been disposed" / "Job was cancelled" errors.

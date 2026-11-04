@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.6.3"
+version = "0.6.4"
 
 android {
     namespace = "com.applooma.rtc"
