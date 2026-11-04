@@ -1737,6 +1737,17 @@ class AppEngine private constructor(
         }
     }
 
+    /**
+     * Java-friendly [loadHistory]: the result (or the error) arrives on the main
+     * thread. `limit` and `before` may be null. Since 0.6.5.
+     */
+    fun loadHistoryAsync(limit: Int?, before: Date?, callback: AppHistoryCallback) {
+        scope.launch {
+            val result = try { Result.success(loadHistory(limit, before)) } catch (t: Throwable) { Result.failure(t) }
+            withContext(Dispatchers.Main) { callback.onResult(result.getOrNull(), result.exceptionOrNull()) }
+        }
+    }
+
     /** Broadcast raw bytes. Prefer sendMessage() unless you need your own format. Queued until joined. */
     @JvmOverloads
     fun sendData(data: ByteArray, reliable: Boolean = true) {

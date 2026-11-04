@@ -980,3 +980,8 @@ class JoinAbandonedException internal constructor(cause: Throwable) :
     kotlinx.coroutines.CancellationException("Left the channel before the join finished") {
     init { initCause(cause) }
 }
+
+/** Result of [AppEngine.loadHistoryAsync], on the main thread: exactly one of `page` / `error` is set. */
+fun interface AppHistoryCallback {
+    fun onResult(page: AppHistoryPage?, error: Throwable?)
+}

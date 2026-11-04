@@ -1,5 +1,9 @@
 # Changelog
 
+## rtc-android 0.6.5 · uikit-android 0.2.23 — 2026-11-04
+
+- `loadHistoryAsync(limit, before, AppHistoryCallback)`: stored chat from Java, result on the main thread.
+
 ## rtc-android 0.6.4 · uikit-android 0.2.22 — 2026-11-04
 
 - A join that finishes connecting after `leaveChannel()` / `destroy()` now disconnects at once instead of staying in the room. Before, that leftover connection used the same user id and could push the user's real session out (`DUPLICATE_IDENTITY`), which ended a host's live for viewers.
