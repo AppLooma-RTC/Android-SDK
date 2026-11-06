@@ -1,5 +1,12 @@
 # Changelog
 
+## rtc-android 0.7.1 — 2026-11-07
+
+- A join on an engine that was already destroyed is ignored (with a warning in the log) instead of failing, retrying and reporting `onError`. Apps that rejoined from `onError` could loop, and every extra join pushed the live session out of the room.
+- No relay retry after the engine's own resources were released: that error is not a network problem.
+- `joinChannel()` while a join is already running on the same engine is ignored.
+- Log warnings for 10 or more joins in a minute, and for a second engine joining while another is still in a channel. Keep one engine for the app's lifetime and wait before retrying after `onError`.
+
 ## rtc-android 0.7.0 · uikit-android 0.3.0 · beauty-android 0.2.0 — 2026-11-04
 
 - **Breaking:** minimum Android is now 7.0 (API 24), up from 6.0 (API 23), matching Google Play services. Apps with `minSdk 23` must raise it to 24.

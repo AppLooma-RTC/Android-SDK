@@ -47,6 +47,7 @@ import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** Our own frames travel on the same channel as customer data, tagged so the two never mix. */
@@ -280,6 +281,10 @@ class AppEngine private constructor(
 
     companion object {
         private const val TAG = "AppLoomaRTC"
+        private const val JOIN_LOOP_WINDOW_MS = 60_000L
+        private const val JOIN_LOOP_LIMIT = 10
+        /** The engine that joined last in this process, to spot two engines joining at once. */
+        private val liveEngine = java.util.concurrent.atomic.AtomicReference<AppEngine?>(null)
 
         /**
          * The video codecs this device can send and receive, with whether the
@@ -648,6 +653,46 @@ class AppEngine private constructor(
      * Returns once you are in; [AppEventHandler.onJoined] fires at the same moment.
      */
     suspend fun joinChannel(token: String, wsUrl: String, options: AppJoinOptions = AppJoinOptions()) {
+        if (destroyed) {
+            // A join on an engine that was already destroyed can only fail, and a
+            // retry of it would push this user's live session out of the room.
+            android.util.Log.w(TAG, "joinChannel() on a destroyed AppEngine is ignored: keep one engine for the app's lifetime")
+            throw JoinAbandonedException(IllegalStateException("engine destroyed"))
+        }
+        if (!joining.compareAndSet(false, true)) {
+            // Each extra join with the same token replaces the session already in the room.
+            android.util.Log.w(TAG, "joinChannel() while a join is already in progress is ignored")
+            throw JoinAbandonedException(IllegalStateException("a join is already in progress"))
+        }
+        warnOnJoinLoop()
+        try { joinChannelOnce(token, wsUrl, options) } finally { joining.set(false) }
+    }
+
+    /** True from the start of joinChannel() until it returns or throws. */
+    private val joining = AtomicBoolean()
+    @Volatile private var destroyed = false
+    private val recentJoins = ArrayDeque<Long>()
+
+    /** Many joins in a short time mean the app rejoins in a loop, each one replacing the last. */
+    private fun warnOnJoinLoop() {
+        val now = System.currentTimeMillis()
+        val count = synchronized(recentJoins) {
+            recentJoins.addLast(now)
+            while (recentJoins.isNotEmpty() && now - recentJoins.first() > JOIN_LOOP_WINDOW_MS) recentJoins.removeFirst()
+            recentJoins.size
+        }
+        val other = liveEngine.getAndSet(this)
+        if (other != null && other !== this && !other.destroyed && (other.isJoined || other.joining.get())) {
+            android.util.Log.w(TAG, "Another AppEngine is still in a channel: two engines joining with the same user replace each other. Destroy the old engine first.")
+            debug("warning: another engine instance is still joined")
+        }
+        if (count >= JOIN_LOOP_LIMIT) {
+            android.util.Log.w(TAG, "$count joins in ${JOIN_LOOP_WINDOW_MS / 1000} s: rejoining in a loop pushes the live session out of the room. Wait before retrying after onError.")
+            debug("warning: join loop, $count joins in ${JOIN_LOOP_WINDOW_MS / 1000} s")
+        }
+    }
+
+    private suspend fun joinChannelOnce(token: String, wsUrl: String, options: AppJoinOptions) {
         if (previewTrack != null) withContext(Dispatchers.Main) { endPreview() }
         check(!isJoined) { "Already in a channel — call leaveChannel() first" }
         // Smart routing: pick the media server for this device / room (our own URLs only).
@@ -687,7 +732,7 @@ class AppEngine private constructor(
         try {
             connectWithProxy(wsUrl, token, epoch)
         } catch (t: Throwable) {
-            if (epoch != joinEpoch.get()) {
+            if (epoch != joinEpoch.get() || destroyed) {
                 // leaveChannel() or destroy() was called before the join finished
                 // (the user left the room within seconds). Not a failure.
                 debug("join abandoned: left before connected (${t.javaClass.simpleName})")
@@ -853,7 +898,7 @@ class AppEngine private constructor(
         try {
             room.connect(wsUrl, token, ConnectOptions(autoSubscribe = true))
         } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException || epoch != joinEpoch.get() || !ProxyPolicy.shouldRetry(mode, t)) throw t
+            if (t is kotlinx.coroutines.CancellationException || epoch != joinEpoch.get() || destroyed || !ProxyPolicy.shouldRetry(mode, t)) throw t
             debug("direct join failed (${t.javaClass.simpleName}: ${t.message}); retrying once through the cloud proxy on TLS 443")
             android.util.Log.w(TAG, "Direct connection failed; retrying through the AppLooma cloud proxy (TLS 443)")
             proxyRetrying = true
@@ -2526,6 +2571,8 @@ class AppEngine private constructor(
 
     /** Release all resources. */
     fun destroy() {
+        destroyed = true
+        liveEngine.compareAndSet(this, null)
         stopNetworkTest()
         leaveChannel()
         SharedAudio.unlisten(this)

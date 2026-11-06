@@ -50,7 +50,7 @@ internal class FallbackPolicy(
 
 /** When the AUTO cloud proxy retries a failed join through the TLS 443 relay. */
 internal object ProxyPolicy {
-    private val NOT_NETWORK = Regex("401|403|unauthori[sz]ed|forbidden|permission|invalid token|token is expired|not allowed|already", RegexOption.IGNORE_CASE)
+    private val NOT_NETWORK = Regex("401|403|unauthori[sz]ed|forbidden|permission|invalid token|token is expired|not allowed|already|disposed|released", RegexOption.IGNORE_CASE)
     private val NETWORK = Regex("time[d ]?out|timeout|network|transport|\\bice\\b|connection|connect|unreachable|socket|peer", RegexOption.IGNORE_CASE)
 
     /** A failed direct join that the relay may fix: a connection or network timeout, not a refused token. */
