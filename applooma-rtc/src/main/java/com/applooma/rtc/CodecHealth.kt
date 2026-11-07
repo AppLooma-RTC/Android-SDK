@@ -138,6 +138,26 @@ internal class FallbackGate {
     fun reset() { used = false }
 }
 
+/**
+ * After the one codec fallback, a stalled camera gets a plain republish on the
+ * same (already safe) encoder: at most [max] per publish session and at least
+ * [minGapMs] apart, so a phone that cannot encode at all never loops.
+ */
+internal class CameraRestartBudget(
+    private val max: Int = 3,
+    private val minGapMs: Long = 30_000,
+) {
+    private var used = 0
+    private var lastAt = -1L
+    val count: Int get() = used
+    fun tryAcquire(nowMs: Long): Boolean {
+        if (used >= max) return false
+        if (lastAt >= 0 && nowMs - lastAt < minGapMs) return false
+        used++; lastAt = nowMs; return true
+    }
+    fun reset() { used = 0; lastAt = -1L }
+}
+
 /** A remembered "encoder X is bad on this phone" entry. */
 internal data class CodecVerdict(
     val device: String,

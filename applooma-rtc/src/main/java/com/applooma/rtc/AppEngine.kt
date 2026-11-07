@@ -1119,8 +1119,15 @@ class AppEngine private constructor(
         lp.videoTrackCaptureDefaults = lp.videoTrackCaptureDefaults.copy(position = track.options.position ?: lp.videoTrackCaptureDefaults.position)
         debug("republish camera: unpublish")
         lp.unpublishTrack(track)
-        if (wasOn) lp.setCameraEnabled(true)
-        debug("republish camera: published=${localVideoTrack != null}")
+        if (!wasOn) { debug("republish camera: camera was off, left off"); return }
+        lp.setCameraEnabled(true)
+        // The publication list updates a moment after setCameraEnabled returns.
+        var published = false
+        for (i in 0 until 20) {
+            if (lp.videoTrackPublications.any { it.second != null && it.second !== track }) { published = true; break }
+            kotlinx.coroutines.delay(100)
+        }
+        debug("republish camera: ${if (published) "published" else "not published after 2 s"}")
     }
 
     /* ------------------------------------------------------------------ */
@@ -1130,6 +1137,7 @@ class AppEngine private constructor(
     private val encoderWatchdog = EncoderWatchdog()
     private val viewerReports = ViewerReports()
     private val fallbackGate = FallbackGate()
+    private val cameraRestarts = CameraRestartBudget()
     private var watchedRtc: Any? = null
     private val noFrameSince = HashMap<String, Long>()
     private val lastReportSent = HashMap<String, Long>()
@@ -1146,7 +1154,7 @@ class AppEngine private constructor(
     init { AppLoomaVideoEncoderFactory.addFailureListener(encoderFailureListener) }
 
     private fun resetCodecRecovery() {
-        fallbackGate.reset(); viewerReports.clear(); encoderWatchdog.pause(); watchedRtc = null
+        fallbackGate.reset(); cameraRestarts.reset(); viewerReports.clear(); encoderWatchdog.pause(); watchedRtc = null
         noFrameSince.clear(); lastReportSent.clear(); remoteCodec.clear()
         reportedOutcomes.clear(); healthySince = -1L
         videoLoadReset()
@@ -1222,7 +1230,19 @@ class AppEngine private constructor(
      */
     private fun fallBack(reason: String) = launchSafely {
         val track = localVideoTrack as? io.livekit.android.room.track.LocalVideoTrack ?: return@launchSafely
-        if (!fallbackGate.tryAcquire()) { log("codec recovery already used in this session; $reason ignored"); return@launchSafely }
+        if (!fallbackGate.tryAcquire()) {
+            // The codec switch is spent; viewers would otherwise see black for the
+            // rest of the live. Republish the camera on the same safe encoder.
+            if (reason == CodecHealth.REASON_VIEWERS || !cameraRestarts.tryAcquire(System.currentTimeMillis())) {
+                log("codec recovery already used in this session; $reason ignored")
+                return@launchSafely
+            }
+            log("camera restart ${cameraRestarts.count}/3 reason=$reason")
+            Diagnostics.problem(DiagPolicy.PROBLEM_FALLBACK)
+            republishCamera(track)
+            notifyLocalVideoChanged()
+            return@launchSafely
+        }
         val codec = currentCodec
         val mime = mimeOfCodec(codec)
         val hw = AppLoomaVideoEncoderFactory.findHardwareEncoder(mime)

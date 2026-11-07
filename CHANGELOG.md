@@ -1,5 +1,10 @@
 # Changelog
 
+## rtc-android 0.7.2 — 2026-11-07
+
+- When the camera encoder stalls again after the automatic codec switch, the camera is republished on the same encoder instead of staying black for the rest of the live. At most 3 times per session, at least 30 s apart.
+- The camera republish log line now reports the real result (`published` / `not published after 2 s`) instead of a misleading `published=false`.
+
 ## rtc-android 0.7.1 — 2026-11-07
 
 - A join on an engine that was already destroyed is ignored (with a warning in the log) instead of failing, retrying and reporting `onError`. Apps that rejoined from `onError` could loop, and every extra join pushed the live session out of the room.

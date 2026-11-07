@@ -78,6 +78,17 @@ class CodecHealthTest {
         assertTrue(g.tryAcquire())
     }
 
+    @Test fun cameraRestartsAreSpacedAndCapped() {
+        val b = CameraRestartBudget(max = 3, minGapMs = 30_000)
+        assertTrue(b.tryAcquire(0))
+        assertFalse(b.tryAcquire(10_000))
+        assertTrue(b.tryAcquire(30_000))
+        assertTrue(b.tryAcquire(60_000))
+        assertFalse(b.tryAcquire(200_000))
+        b.reset()
+        assertTrue(b.tryAcquire(200_000))
+    }
+
     @Test fun verdictExpiresAndFollowsSdkVersion() {
         val v = CodecVerdict("maker model", "c2.vendor.avc.encoder", "1.0.0", 1_000)
         assertTrue(v.isValid(1_000 + 60_000, "maker model", "c2.vendor.avc.encoder", "1.0.0"))
