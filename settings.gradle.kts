@@ -11,6 +11,8 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }
+        // Last, so a locally built transport core is only a fallback before it reaches Central.
+        mavenLocal()
     }
 }
 

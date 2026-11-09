@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.applooma"
-version = "0.7.2"
+version = "0.8.0"
 
 android {
     namespace = "com.applooma.rtc"
@@ -39,7 +39,7 @@ dependencies {
     // api, not implementation: a Java consumer's compiler resolves every type
     // in AppRemoteUser's signatures, internal members included, and failed
     // with "cannot access VideoTrack" when the core was runtime-only.
-    api("com.applooma:rtc-core-android:2.12.1")
+    api("com.applooma:rtc-core-android:2.12.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // The engine logs through Timber (already on the runtime classpath via the core); compile-only here for enableDebugLogging.
     compileOnly("com.jakewharton.timber:timber:4.7.0")

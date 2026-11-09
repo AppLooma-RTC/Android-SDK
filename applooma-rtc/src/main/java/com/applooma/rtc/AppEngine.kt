@@ -268,6 +268,8 @@ class AppEngine private constructor(
     private var statsJob: Job? = null
     private var lastDiagStatsAt = 0L
     private val users = LinkedHashMap<String, AppRemoteUser>()
+    /** True between Reconnecting and Reconnected: remote "disconnects" in that window are the transport's, not the users'. */
+    @Volatile private var rosterFrozen = false
     private val pendingData = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var lastRole: AppRole? = null
     private var lastCanPublish: Boolean? = null
@@ -939,6 +941,32 @@ class AppEngine private constructor(
         setProxyState(AppProxyState.DIRECT, false)
         pendingData.clear()
         eventsJob?.cancel()
+    }
+
+    private fun deliverUserLeft(u: AppRemoteUser, reason: AppLeaveReason) {
+        u.leaveReason = reason
+        eventHandler?.onUserLeft(u)
+        eventHandler?.onUserLeft(u, reason)
+    }
+
+    /**
+     * After a reconnect: report who left while we were away (DROPPED) and who
+     * is new, without announcing again the people who stayed.
+     */
+    private fun resyncAfterReconnect() {
+        val present = room.remoteParticipants.values.associateBy { it.identity?.value ?: "" }
+        val diff = RosterDiff.of(users.keys, present.keys)
+        diff.gone.forEach { uid -> users.remove(uid)?.let { deliverUserLeft(it, AppLeaveReason.DROPPED) } }
+        diff.added.forEach { uid ->
+            val p = present[uid] ?: return@forEach
+            val user = userFor(p)
+            eventHandler?.onUserJoined(user)
+            if (p.trackPublications.values.any { it.track != null }) eventHandler?.onTrackSubscribed(user)
+        }
+        if (diff.gone.isNotEmpty() || diff.added.isNotEmpty()) {
+            debug("resync after reconnect: gone=${diff.gone.size} added=${diff.added.size}")
+            eventHandler?.onAudienceChanged(audience)
+        }
     }
 
     /** Announces everyone already present, and their already-published tracks. */
@@ -2195,15 +2223,36 @@ class AppEngine private constructor(
                         eventHandler?.onUserJoined(userFor(event.participant))
                         eventHandler?.onAudienceChanged(audience)
                     }
-                    is RoomEvent.ParticipantDisconnected -> {
+                    is RoomEvent.ParticipantDisconnected -> if (rosterFrozen) {
+                        // While *we* are reconnecting the transport drops every remote
+                        // participant and re-adds them on return. Nobody actually left;
+                        // the diff in resyncAfterReconnect reports whoever really did.
+                        debug("user disconnect during our reconnect held: uid=${event.participant.identity?.value}")
+                    } else {
                         val u = users.remove(event.participant.identity?.value)
-                        if (u != null) eventHandler?.onUserLeft(u)
+                        if (u != null) {
+                            // Via reflection: the protobuf types are not on our compile classpath.
+                            val name = try {
+                                val info = event.participant.participantInfo
+                                info?.javaClass?.getMethod("getDisconnectReason")?.invoke(info)?.toString()
+                            } catch (_: Throwable) { null }
+                            val reason = LeaveReasons.fromEngineName(name)
+                            debug("user left uid=${u.uid} reason=$name -> $reason")
+                            deliverUserLeft(u, reason)
+                        }
                         eventHandler?.onAudienceChanged(audience)
                     }
                     // A promotion or demotion rewrites the metadata; for the
-                    // local participant that is a role change without rejoin.
+                    // local participant that is a role change without rejoin,
+                    // for a remote one it is onUserRoleChanged.
                     is RoomEvent.ParticipantMetadataChanged -> {
                         if (event.participant === room.localParticipant) handleRoleChange()
+                        else (event.participant as? RemoteParticipant)?.let { p ->
+                            val u = userFor(p)
+                            val old = u.lastKnownRole
+                            val now = u.role
+                            if (old != now) { u.lastKnownRole = now; eventHandler?.onUserRoleChanged(u, old, now) }
+                        }
                         eventHandler?.onAudienceChanged(audience)
                     }
                     is RoomEvent.ParticipantPermissionsChanged -> {
@@ -2235,12 +2284,13 @@ class AppEngine private constructor(
                         if (event.participant === room.localParticipant) notifyLocalVideoChanged()
                         else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) notifyLocalVideoChanged()
-                    is RoomEvent.Reconnecting -> { debug("reconnecting"); Diagnostics.reconnecting(); eventHandler?.onReconnecting() }
+                    is RoomEvent.Reconnecting -> { debug("reconnecting"); rosterFrozen = true; Diagnostics.reconnecting(); eventHandler?.onReconnecting() }
                     is RoomEvent.Reconnected -> {
                         debug("reconnected")
-                        users.clear()
-                        seedExistingParticipants()
+                        rosterFrozen = false
+                        resyncAfterReconnect()
                         eventHandler?.onReconnected()
+                        eventHandler?.onUsersResynced(users.values.toList())
                     }
                     is RoomEvent.Disconnected -> if (proxyRetrying) {
                         // Our own teardown of the failed direct attempt before the
@@ -2255,9 +2305,10 @@ class AppEngine private constructor(
                         resetFallbacks()
                         mixer.stop()
                         statsJob?.cancel()
-                        // Report everyone as gone; a stale roster after a
-                        // disconnect made remoteUsers wrong until the next join.
-                        users.values.forEach { eventHandler?.onUserLeft(it) }
+                        // Our own connection ended; the others are most likely
+                        // still in the channel, so nobody is reported as left.
+                        // The roster is cleared so remoteUsers is not stale.
+                        rosterFrozen = false
                         users.clear()
                         eventHandler?.onDisconnected(event.reason?.name)
                     }

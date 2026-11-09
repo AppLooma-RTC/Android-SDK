@@ -1,5 +1,14 @@
 # Changelog
 
+## rtc-android 0.8.0 · rtc-core-android 2.12.2 — 2026-11-10
+
+- `onUserLeft(user, reason)` with `AppLeaveReason`: QUIT, DROPPED, KICKED, DUPLICATE_IDENTITY, ROOM_CLOSED or UNKNOWN; also `AppRemoteUser.leaveReason`. The one-argument `onUserLeft(user)` still fires.
+- **Behaviour change:** when your own connection drops, the other users are no longer reported through `onUserLeft`; you get `onDisconnected(reason)` alone. A viewer whose network fails no longer sees the host as gone.
+- During and after your own reconnect, people who stayed are not reported as left and joined again. Anyone who really left meanwhile gets `onUserLeft(DROPPED)`, anyone new `onUserJoined`, then `onUsersResynced(users)` carries the full roster.
+- `onUserRoleChanged(user, oldRole, newRole)` when your server promotes or demotes someone else, distinct from `onUserMediaChanged`.
+- Transport core 2.12.2: a remote participant's disconnect reason is kept on the participant until the disconnect event, so the SDK can read it.
+- Timings written down: a user whose connection fails is reported as left after the server's 20 s grace period; your own reconnect attempts give up after about 12 s each.
+
 ## rtc-android 0.7.2 — 2026-11-07
 
 - When the camera encoder stalls again after the automatic codec switch, the camera is republished on the same encoder instead of staying black for the rest of the live. At most 3 times per session, at least 30 s apart.

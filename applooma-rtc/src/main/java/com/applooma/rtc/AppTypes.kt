@@ -564,6 +564,16 @@ class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
     /** Whether this user can publish. Convenient for laying out a stage. */
     val isPublisher: Boolean get() = role != AppRole.AUDIENCE
 
+    /**
+     * Why this user left, once they have. Null while they are in the channel.
+     * Set just before [AppEventHandler.onUserLeft] is delivered.
+     */
+    @Volatile var leaveReason: AppLeaveReason? = null
+        internal set
+
+    /** The role last reported to the app, to tell a real change from a metadata rewrite. */
+    internal var lastKnownRole: AppRole = role
+
     /** The metadata your own server put in the token, with our fields stripped out. */
     val attributes: Map<String, Any?>
         get() {
@@ -625,9 +635,38 @@ class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
  */
 abstract class AppEventHandler {
     open fun onUserJoined(user: AppRemoteUser) {}
+    /** A remote user left. Both overloads are called; override the one you need. */
     open fun onUserLeft(user: AppRemoteUser) {}
+    /**
+     * A remote user left, with why. [AppLeaveReason.QUIT] means they chose to,
+     * [AppLeaveReason.DROPPED] that their network failed for longer than the
+     * server's grace period (about 20 s). Not called when *your own*
+     * connection drops: that is [onDisconnected] alone, and everyone else may
+     * well still be in the channel.
+     */
+    open fun onUserLeft(user: AppRemoteUser, reason: AppLeaveReason) {}
     open fun onTrackSubscribed(user: AppRemoteUser) {}
+    /**
+     * Your own connection ended for good, after the reconnect attempts gave up
+     * (about 12 s each). `reason` is a transport name such as CLIENT_INITIATED
+     * (you called leaveChannel), DUPLICATE_IDENTITY, PARTICIPANT_REMOVED,
+     * ROOM_DELETED or SIGNAL_CLOSE. Nobody is reported as left here.
+     */
     open fun onDisconnected(reason: String?) {}
+    /**
+     * After [onReconnected]: who is in the channel now. Anyone who left while
+     * you were away was already reported through [onUserLeft] with
+     * [AppLeaveReason.DROPPED], and anyone new through [onUserJoined]; people
+     * who stayed are *not* announced again.
+     */
+    open fun onUsersResynced(users: List<AppRemoteUser>) {}
+    /**
+     * Another user's role changed without them leaving: your server promoted
+     * them to the stage or sent them back to the audience. Distinct from
+     * [onUserMediaChanged], which also fires when someone merely turns their
+     * camera and microphone off.
+     */
+    open fun onUserRoleChanged(user: AppRemoteUser, oldRole: AppRole, newRole: AppRole) {}
     /**
      * Someone sent a message with sendMessage(). `text` and `data` are exactly
      * what the sender passed; values inside `data` arrive as JSON types
