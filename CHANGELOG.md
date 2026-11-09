@@ -1,6 +1,8 @@
 # Changelog
 
-## rtc-android 0.8.0 · rtc-core-android 2.12.2 — 2026-11-10
+## rtc-android 0.8.0 · rtc-core-android 2.12.2 · uikit-android 0.4.0 — 2026-11-10
+
+- uikit-android 0.4.0 is the same UI kit rebuilt on rtc-android 0.8.0; no API changes.
 
 - `onUserLeft(user, reason)` with `AppLeaveReason`: QUIT, DROPPED, KICKED, DUPLICATE_IDENTITY, ROOM_CLOSED or UNKNOWN; also `AppRemoteUser.leaveReason`. The one-argument `onUserLeft(user)` still fires.
 - **Behaviour change:** when your own connection drops, the other users are no longer reported through `onUserLeft`; you get `onDisconnected(reason)` alone. A viewer whose network fails no longer sees the host as gone.
