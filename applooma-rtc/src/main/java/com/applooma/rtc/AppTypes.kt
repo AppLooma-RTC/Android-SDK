@@ -1,7 +1,7 @@
 package com.applooma.rtc
 
-import io.livekit.android.room.participant.RemoteParticipant
-import io.livekit.android.room.track.VideoTrack
+import com.applooma.rtc.transport.room.participant.RemoteParticipant
+import com.applooma.rtc.transport.room.track.VideoTrack
 import org.json.JSONObject
 import java.util.Date
 

@@ -1,4 +1,4 @@
-package livekit.org.webrtc
+package org.webrtc
 
 import android.media.MediaCodecInfo
 

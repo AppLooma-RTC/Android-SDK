@@ -6,9 +6,9 @@ import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
-import io.livekit.android.room.track.VideoTrack
-import livekit.org.webrtc.VideoFrame
-import livekit.org.webrtc.VideoSink
+import com.applooma.rtc.transport.room.track.VideoTrack
+import org.webrtc.VideoFrame
+import org.webrtc.VideoSink
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 

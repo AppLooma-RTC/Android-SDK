@@ -3,8 +3,8 @@ package com.applooma.rtc
 import android.content.Context
 import android.util.AttributeSet
 import android.widget.FrameLayout
-import io.livekit.android.renderer.TextureViewRenderer
-import io.livekit.android.room.track.VideoTrack
+import com.applooma.rtc.transport.renderer.TextureViewRenderer
+import com.applooma.rtc.transport.room.track.VideoTrack
 
 /**
  * Renders a participant's camera.
@@ -42,7 +42,7 @@ class AppVideoView @JvmOverloads constructor(
 
     private val renderer = TextureViewRenderer(context)
     private var attachedTrack: VideoTrack? = null
-    private var attachedRtc: livekit.org.webrtc.VideoTrack? = null
+    private var attachedRtc: org.webrtc.VideoTrack? = null
     private var attachedSink = false
     private var initialised = false
     private var waitingFor: AppRemoteUser? = null
@@ -196,7 +196,7 @@ class AppVideoView @JvmOverloads constructor(
         // The engine's local track hands its renderers the raw camera frames,
         // ahead of any processor; draw from the native track instead so the
         // host's own preview shows what viewers get (beauty, filters, effects).
-        val local = track is io.livekit.android.room.track.LocalVideoTrack && rtc != null
+        val local = track is com.applooma.rtc.transport.room.track.LocalVideoTrack && rtc != null
         if (local) rtc!!.addSink(renderer) else track.addRenderer(renderer)
         attachedSink = local
         attachedTrack = track

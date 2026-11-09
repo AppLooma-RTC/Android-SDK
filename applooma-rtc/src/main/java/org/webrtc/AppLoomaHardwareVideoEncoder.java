@@ -13,7 +13,7 @@
  *
  * Copied from HardwareVideoEncoder as bundled in the media engine dependency
  * (version 125.6422.06.1, class
- * livekit.org.webrtc.HardwareVideoEncoder; constructor, fields, methods and log
+ * org.webrtc.HardwareVideoEncoder; constructor, fields, methods and log
  * text verified against that jar with javap). Changes, all behind
  * {@code h264Tweaks} (false reproduces the original exactly):
  *  - H.264 constrained baseline (42e01f): set profile = constrained baseline
@@ -28,7 +28,7 @@
  *    instead of being dropped.
  */
 
-package livekit.org.webrtc;
+package org.webrtc;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -43,7 +43,7 @@ import java.util.Map;
 import java.util.concurrent.BlockingDeque;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
-import livekit.org.webrtc.ThreadUtils.ThreadChecker;
+import org.webrtc.ThreadUtils.ThreadChecker;
 
 /** Android hardware video encoder (see the modification notice above). */
 class AppLoomaHardwareVideoEncoder implements VideoEncoder {

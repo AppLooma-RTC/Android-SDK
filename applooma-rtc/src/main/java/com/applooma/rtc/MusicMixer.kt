@@ -6,7 +6,7 @@ import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import io.livekit.android.audio.MixerAudioBufferCallback
+import com.applooma.rtc.transport.audio.MixerAudioBufferCallback
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean

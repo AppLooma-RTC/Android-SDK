@@ -1,9 +1,9 @@
 package com.applooma.rtc
 
-import livekit.org.webrtc.EncodedImage
-import livekit.org.webrtc.VideoCodecStatus
-import livekit.org.webrtc.VideoEncoder
-import livekit.org.webrtc.VideoFrame
+import org.webrtc.EncodedImage
+import org.webrtc.VideoCodecStatus
+import org.webrtc.VideoEncoder
+import org.webrtc.VideoFrame
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 

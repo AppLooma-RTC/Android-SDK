@@ -1,6 +1,6 @@
 package com.applooma.rtc
 
-import livekit.org.webrtc.audio.JavaAudioDeviceModule
+import org.webrtc.audio.JavaAudioDeviceModule
 
 /**
  * Microphone capture source and rate. A local debug switch lets the team compare

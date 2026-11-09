@@ -1,16 +1,16 @@
 package com.applooma.rtc
 
 import android.content.Context
-import io.livekit.android.audio.AudioHandler
-import io.livekit.android.audio.AudioSwitchHandler
-import io.livekit.android.room.track.LocalVideoTrack
-import livekit.org.webrtc.JavaI420Buffer
-import livekit.org.webrtc.RtpSender
-import livekit.org.webrtc.RtpTransceiver
-import livekit.org.webrtc.VideoFrame
-import livekit.org.webrtc.VideoProcessor
-import livekit.org.webrtc.VideoSink
-import livekit.org.webrtc.VideoSource
+import com.applooma.rtc.transport.audio.AudioHandler
+import com.applooma.rtc.transport.audio.AudioSwitchHandler
+import com.applooma.rtc.transport.room.track.LocalVideoTrack
+import org.webrtc.JavaI420Buffer
+import org.webrtc.RtpSender
+import org.webrtc.RtpTransceiver
+import org.webrtc.VideoFrame
+import org.webrtc.VideoProcessor
+import org.webrtc.VideoSink
+import org.webrtc.VideoSource
 
 /**
  * Access to two parts of a local camera track that the engine does not
@@ -29,7 +29,7 @@ internal object TrackAccess {
         try { LocalVideoTrack::class.java.declaredFields.firstOrNull { it.type == RtpTransceiver::class.java }?.apply { isAccessible = true } } catch (_: Throwable) { null }
     }
     private val roomEngineField by lazy {
-        try { io.livekit.android.room.Room::class.java.declaredFields.firstOrNull { it.type == io.livekit.android.room.RTCEngine::class.java }?.apply { isAccessible = true } } catch (_: Throwable) { null }
+        try { com.applooma.rtc.transport.room.Room::class.java.declaredFields.firstOrNull { it.type == com.applooma.rtc.transport.room.RTCEngine::class.java }?.apply { isAccessible = true } } catch (_: Throwable) { null }
     }
 
     fun source(track: LocalVideoTrack): VideoSource? = try { sourceField?.get(track) as? VideoSource } catch (_: Throwable) { null }
@@ -42,14 +42,14 @@ internal object TrackAccess {
      * room's publisher connection, matched by track id. The route name
      * (senderWithRoute) goes to the log.
      */
-    fun sender(track: LocalVideoTrack, room: io.livekit.android.room.Room? = null): RtpSender? = senderWithRoute(track, room)?.first
+    fun sender(track: LocalVideoTrack, room: com.applooma.rtc.transport.room.Room? = null): RtpSender? = senderWithRoute(track, room)?.first
 
-    fun senderWithRoute(track: LocalVideoTrack, room: io.livekit.android.room.Room?): Pair<RtpSender, String>? {
+    fun senderWithRoute(track: LocalVideoTrack, room: com.applooma.rtc.transport.room.Room?): Pair<RtpSender, String>? {
         try { (senderMethod?.invoke(track) as? RtpSender)?.let { return it to "getter" } } catch (_: Throwable) {}
         try { (transceiverField?.get(track) as? RtpTransceiver)?.sender?.let { return it to "transceiver" } } catch (_: Throwable) {}
         if (room != null) try {
             val id = track.rtcTrack.id()
-            val engine = roomEngineField?.get(room) as? io.livekit.android.room.RTCEngine
+            val engine = roomEngineField?.get(room) as? com.applooma.rtc.transport.room.RTCEngine
             val pc = engine?.getPublisherPeerConnection()
             pc?.senders?.firstOrNull { s -> try { s.track()?.id() == id } catch (_: Throwable) { false } }?.let { return it to "connection" }
         } catch (_: Throwable) {}
@@ -63,7 +63,7 @@ internal class ProcessorAdapter(
     private val gpu: AppTextureProcessor? = null,
 ) : VideoProcessor {
     @Volatile private var sink: VideoSink? = null
-    private var yuvConverter: livekit.org.webrtc.YuvConverter? = null
+    private var yuvConverter: org.webrtc.YuvConverter? = null
     private var handler: android.os.Handler? = null
     private val identity = android.graphics.Matrix()
     private var gpuErrors = 0
@@ -108,12 +108,12 @@ internal class ProcessorAdapter(
         val tb = frame.buffer as? VideoFrame.TextureBuffer ?: return null
         val looper = android.os.Looper.myLooper() ?: return null
         val h = handler ?: android.os.Handler(looper).also { handler = it }
-        val conv = yuvConverter ?: livekit.org.webrtc.YuvConverter().also { yuvConverter = it }
-        val m = livekit.org.webrtc.RendererCommon.convertMatrixFromAndroidGraphicsMatrix(tb.transformMatrix)
+        val conv = yuvConverter ?: org.webrtc.YuvConverter().also { yuvConverter = it }
+        val m = org.webrtc.RendererCommon.convertMatrixFromAndroidGraphicsMatrix(tb.transformMatrix)
         val input = AppTextureFrame(tb.textureId, tb.type == VideoFrame.TextureBuffer.Type.OES, m, tb.width, tb.height, frame.rotation, frame.timestampNs)
         val tex = gpu!!.process(input)
         if (tex < 0) return null
-        val buffer = livekit.org.webrtc.TextureBufferImpl(
+        val buffer = org.webrtc.TextureBufferImpl(
             tb.width, tb.height, VideoFrame.TextureBuffer.Type.RGB, tex, identity, h, conv,
         ) { try { gpu.onTextureReleased(tex) } catch (_: Throwable) {} }
         return VideoFrame(buffer, frame.rotation, frame.timestampNs)

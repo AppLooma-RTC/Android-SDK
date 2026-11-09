@@ -1,5 +1,11 @@
 # Changelog
 
+## rtc-android 0.8.1 · rtc-core-android 3.0.0 — 2026-11-10
+
+- No API changes. The transport core is now fully AppLooma-branded: Kotlin packages `com.applooma.rtc.transport.*`, generated protocol classes under `com.applooma.rtc.transport.proto`, WebRTC classes under plain `org.webrtc`. Nothing in the published AAR, sources jar or `javap` output names a third-party engine.
+- Because WebRTC now lives in `org.webrtc`, an app that also bundles another copy of `org.webrtc` (for example react-native-webrtc in a hybrid app) cannot load both. Native Android apps are not affected; the React Native SDK keeps its own WebRTC module.
+- If you referenced any `io.livekit.*` or `livekit.org.webrtc.*` type directly (unsupported), those imports change to the packages above.
+
 ## rtc-android 0.8.0 · rtc-core-android 2.12.2 · uikit-android 0.4.0 — 2026-11-10
 
 - uikit-android 0.4.0 is the same UI kit rebuilt on rtc-android 0.8.0; no API changes.
