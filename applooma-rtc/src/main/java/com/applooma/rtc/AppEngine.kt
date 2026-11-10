@@ -2273,7 +2273,7 @@ class AppEngine private constructor(
                         val uid = event.participant.identity?.value ?: ""
                         val pending = if (pendingLeaves.containsKey(uid)) users[uid] else null
                         if (pending != null) resumeUser(pending, event.participant)
-                        else eventHandler?.onUserJoined(userFor(event.participant))
+                        else { debug("user joined uid=$uid"); eventHandler?.onUserJoined(userFor(event.participant)) }
                         eventHandler?.onAudienceChanged(audience)
                     }
                     is RoomEvent.ParticipantDisconnected -> if (rosterFrozen) {
@@ -2284,6 +2284,8 @@ class AppEngine private constructor(
                     } else {
                         val uid = event.participant.identity?.value ?: ""
                         val u = users[uid]
+                        if (u != null && u.p !== event.participant) debug("user disconnect for a stale participant object ignored uid=$uid")
+                        if (u == null) debug("user disconnect for unknown uid=$uid")
                         if (u != null && u.p === event.participant) {
                             // Via reflection: the protobuf types are not on our compile classpath.
                             val name = try {
@@ -2381,7 +2383,11 @@ class AppEngine private constructor(
                         rosterFrozen = false
                         cancelPendingLeaves()
                         users.clear()
-                        setConnectionState(AppConnectionState.DISCONNECTED, ConnectionReasons.fromEngineName(event.reason?.name))
+                        // A reconnect that gave up ends with no transport reason: it was the network.
+                        val why = ConnectionReasons.fromEngineName(event.reason?.name).let {
+                            if (it == AppConnectionReason.UNKNOWN && connectionState == AppConnectionState.RECONNECTING) AppConnectionReason.NETWORK_LOST else it
+                        }
+                        setConnectionState(AppConnectionState.DISCONNECTED, why)
                         eventHandler?.onDisconnected(event.reason?.name)
                     }
                     is RoomEvent.DataReceived -> if (CodecHealth.isInternalTopic(event.topic)) {
