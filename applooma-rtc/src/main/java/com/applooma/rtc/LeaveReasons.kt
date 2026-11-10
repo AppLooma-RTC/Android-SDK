@@ -24,6 +24,12 @@ enum class AppLeaveReason {
 
 /** Pure mapping from the transport's reason names, so it is unit-tested without Android. */
 internal object LeaveReasons {
+    /** Whether a leave with this reason may be a drop the user comes back from (held for the grace period). */
+    fun holdsForReturn(reason: AppLeaveReason): Boolean = when (reason) {
+        AppLeaveReason.DROPPED, AppLeaveReason.UNKNOWN, AppLeaveReason.DUPLICATE_IDENTITY -> true
+        else -> false
+    }
+
     fun fromEngineName(name: String?): AppLeaveReason = when (name) {
         "CLIENT_INITIATED" -> AppLeaveReason.QUIT
         "SIGNAL_CLOSE", "STATE_MISMATCH", "CONNECTION_TIMEOUT", "MIGRATION", "JOIN_FAILURE" -> AppLeaveReason.DROPPED
@@ -31,6 +37,19 @@ internal object LeaveReasons {
         "DUPLICATE_IDENTITY" -> AppLeaveReason.DUPLICATE_IDENTITY
         "ROOM_DELETED", "ROOM_CLOSED", "SERVER_SHUTDOWN" -> AppLeaveReason.ROOM_CLOSED
         else -> AppLeaveReason.UNKNOWN
+    }
+}
+
+/** Our own disconnect reason names, mapped for [AppEventHandler.onConnectionStateChanged]. */
+internal object ConnectionReasons {
+    fun fromEngineName(name: String?): AppConnectionReason = when (name) {
+        "CLIENT_INITIATED" -> AppConnectionReason.LEAVE_CHANNEL
+        "DUPLICATE_IDENTITY" -> AppConnectionReason.DUPLICATE_IDENTITY
+        "PARTICIPANT_REMOVED" -> AppConnectionReason.KICKED
+        "ROOM_DELETED", "ROOM_CLOSED", "SERVER_SHUTDOWN" -> AppConnectionReason.ROOM_CLOSED
+        "SIGNAL_CLOSE", "STATE_MISMATCH", "CONNECTION_TIMEOUT", "MIGRATION" -> AppConnectionReason.NETWORK_LOST
+        "JOIN_FAILURE" -> AppConnectionReason.JOIN_FAILED
+        else -> AppConnectionReason.UNKNOWN
     }
 }
 

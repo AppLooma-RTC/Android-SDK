@@ -1,5 +1,12 @@
 # Changelog
 
+## rtc-android 0.9.0 · uikit-android 0.5.0 — 2026-11-11
+
+- `onUserStateChanged(user, AppUserState)`: a remote user whose connection dropped is reported RECONNECTING and kept in the roster for `AppEngineOptions.remoteLeaveGraceMs` (default 20 s). If they come back in time you get ACTIVE, with no `onUserLeft`/`onUserJoined` pair; if not, `onUserLeft(user, DROPPED)` follows. `AppRemoteUser.state` carries the same value. Set the grace to 0 for the old behaviour.
+- `onConnectionStateChanged(AppConnectionState, AppConnectionReason)` and `AppEngine.connectionState`: CONNECTING, CONNECTED, RECONNECTING, DISCONNECTED, FAILED with a typed reason (JOIN_SUCCESS, JOIN_FAILED, NETWORK_LOST, NETWORK_RESTORED, TOKEN_EXPIRED, KICKED, DUPLICATE_IDENTITY, ROOM_CLOSED, LEAVE_CHANNEL, UNKNOWN). `onDisconnected(String)` still fires.
+- Webhooks: `participant.role_changed` (after `POST /v1/rooms/{room}/participants/{identity}/role`) and `room.host_left` (a host's session ended and they did not return within 20 s; immediate when they quit or were removed).
+- uikit-android 0.5.0 is the same UI kit rebuilt on 0.9.0.
+
 ## rtc-android 0.8.1 · rtc-core-android 3.0.0 — 2026-11-10
 
 - No API changes. The transport core is now fully AppLooma-branded: Kotlin packages `com.applooma.rtc.transport.*`, generated protocol classes under `com.applooma.rtc.transport.proto`, WebRTC classes under plain `org.webrtc`. Nothing in the published AAR, sources jar or `javap` output names a third-party engine.

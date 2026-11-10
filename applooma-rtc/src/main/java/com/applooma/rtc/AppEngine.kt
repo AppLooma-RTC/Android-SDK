@@ -270,6 +270,44 @@ class AppEngine private constructor(
     private val users = LinkedHashMap<String, AppRemoteUser>()
     /** True between Reconnecting and Reconnected: remote "disconnects" in that window are the transport's, not the users'. */
     @Volatile private var rosterFrozen = false
+    /** Remote users whose connection dropped and who are still inside remoteLeaveGraceMs. */
+    private val pendingLeaves = HashMap<String, Job>()
+
+    /** Your own connection as one state machine; see [AppEventHandler.onConnectionStateChanged]. */
+    @Volatile var connectionState: AppConnectionState = AppConnectionState.DISCONNECTED
+        private set
+
+    private fun setConnectionState(state: AppConnectionState, reason: AppConnectionReason) {
+        if (connectionState == state && state != AppConnectionState.CONNECTED) return
+        connectionState = state
+        debug("connection $state reason=$reason")
+        eventHandler?.onConnectionStateChanged(state, reason)
+    }
+
+    /** The grace period ran out: the dropped user is gone for real. */
+    private fun expireLeave(uid: String) {
+        pendingLeaves.remove(uid)
+        val u = users.remove(uid) ?: return
+        debug("user left after grace uid=$uid")
+        deliverUserLeft(u, AppLeaveReason.DROPPED)
+        eventHandler?.onAudienceChanged(audience)
+    }
+
+    /** A dropped user came back on a new transport participant: same person, no leave, no join. */
+    private fun resumeUser(u: AppRemoteUser, p: RemoteParticipant) {
+        pendingLeaves.remove(u.uid)?.cancel()
+        u.rebind(p)
+        u.state = AppUserState.ACTIVE
+        u.leaveReason = null
+        debug("user back within grace uid=${u.uid}")
+        eventHandler?.onUserStateChanged(u, AppUserState.ACTIVE)
+        if (p.trackPublications.values.any { it.track != null }) eventHandler?.onTrackSubscribed(u)
+    }
+
+    private fun cancelPendingLeaves() {
+        pendingLeaves.values.forEach { it.cancel() }
+        pendingLeaves.clear()
+    }
     private val pendingData = ArrayDeque<Pair<ByteArray, Boolean>>()
     private var lastRole: AppRole? = null
     private var lastCanPublish: Boolean? = null
@@ -732,6 +770,7 @@ class AppEngine private constructor(
         if (!hasBluetoothPermission()) {
             android.util.Log.w(TAG, "BLUETOOTH_CONNECT is not granted: Bluetooth headsets will not be offered as an audio route on this phone. Request it at runtime next to RECORD_AUDIO.")
         }
+        onMain { setConnectionState(AppConnectionState.CONNECTING, AppConnectionReason.JOIN_SUCCESS) }
         try {
             connectWithProxy(wsUrl, token, epoch)
         } catch (t: Throwable) {
@@ -744,6 +783,7 @@ class AppEngine private constructor(
             debug("join failed: ${t.javaClass.simpleName}: ${t.message}")
             Diagnostics.problem(DiagPolicy.PROBLEM_JOIN)
             Diagnostics.endSession("join failed")
+            onMain { setConnectionState(AppConnectionState.FAILED, AppConnectionReason.JOIN_FAILED) }
             throw t
         }
         if (epoch != joinEpoch.get()) {
@@ -755,6 +795,7 @@ class AppEngine private constructor(
         }
         isJoined = true
         debug("connected localUid=$localUid")
+        onMain { setConnectionState(AppConnectionState.CONNECTED, AppConnectionReason.JOIN_SUCCESS) }
         eventHandler?.onConnectionStage(AppConnectionStage.CONNECTED, null, elapsedSinceJoin())
 
         // Participants already in the room when we join never produce a
@@ -938,7 +979,9 @@ class AppEngine private constructor(
         statsJob?.cancel(); statsJob = null
         room.disconnect()
         isJoined = false
+        cancelPendingLeaves()
         users.clear()
+        setConnectionState(AppConnectionState.DISCONNECTED, AppConnectionReason.LEAVE_CHANNEL)
         setProxyState(AppProxyState.DIRECT, false)
         pendingData.clear()
         eventsJob?.cancel()
@@ -956,6 +999,12 @@ class AppEngine private constructor(
      */
     private fun resyncAfterReconnect() {
         val present = room.remoteParticipants.values.associateBy { it.identity?.value ?: "" }
+        // Everyone the transport re-created on our side is a new participant object.
+        users.values.forEach { u -> present[u.uid]?.let { p -> if (u.p !== p) u.rebind(p) } }
+        pendingLeaves.keys.toList().forEach { uid ->
+            val u = users[uid]; val p = present[uid]
+            if (u != null && p != null) resumeUser(u, p) else pendingLeaves.remove(uid)?.cancel()
+        }
         val diff = RosterDiff.of(users.keys, present.keys)
         diff.gone.forEach { uid -> users.remove(uid)?.let { deliverUserLeft(it, AppLeaveReason.DROPPED) } }
         diff.added.forEach { uid ->
@@ -2221,7 +2270,10 @@ class AppEngine private constructor(
             room.events.collect { event ->
                 when (event) {
                     is RoomEvent.ParticipantConnected -> {
-                        eventHandler?.onUserJoined(userFor(event.participant))
+                        val uid = event.participant.identity?.value ?: ""
+                        val pending = if (pendingLeaves.containsKey(uid)) users[uid] else null
+                        if (pending != null) resumeUser(pending, event.participant)
+                        else eventHandler?.onUserJoined(userFor(event.participant))
                         eventHandler?.onAudienceChanged(audience)
                     }
                     is RoomEvent.ParticipantDisconnected -> if (rosterFrozen) {
@@ -2230,16 +2282,28 @@ class AppEngine private constructor(
                         // the diff in resyncAfterReconnect reports whoever really did.
                         debug("user disconnect during our reconnect held: uid=${event.participant.identity?.value}")
                     } else {
-                        val u = users.remove(event.participant.identity?.value)
-                        if (u != null) {
+                        val uid = event.participant.identity?.value ?: ""
+                        val u = users[uid]
+                        if (u != null && u.p === event.participant) {
                             // Via reflection: the protobuf types are not on our compile classpath.
                             val name = try {
                                 val info = event.participant.participantInfo
                                 info?.javaClass?.getMethod("getDisconnectReason")?.invoke(info)?.toString()
                             } catch (_: Throwable) { null }
                             val reason = LeaveReasons.fromEngineName(name)
-                            debug("user left uid=${u.uid} reason=$name -> $reason")
-                            deliverUserLeft(u, reason)
+                            val grace = this@AppEngine.options.remoteLeaveGraceMs
+                            if (grace > 0 && LeaveReasons.holdsForReturn(reason) && !pendingLeaves.containsKey(uid)) {
+                                // Maybe a drop they come back from: hold the leave, tell the app the state.
+                                debug("user dropped uid=$uid reason=$name; holding ${grace / 1000} s")
+                                u.state = AppUserState.RECONNECTING
+                                pendingLeaves[uid] = scope.launch { delay(grace); expireLeave(uid) }
+                                eventHandler?.onUserStateChanged(u, AppUserState.RECONNECTING)
+                            } else {
+                                pendingLeaves.remove(uid)?.cancel()
+                                users.remove(uid)
+                                debug("user left uid=$uid reason=$name -> $reason")
+                                deliverUserLeft(u, reason)
+                            }
                         }
                         eventHandler?.onAudienceChanged(audience)
                     }
@@ -2285,11 +2349,16 @@ class AppEngine private constructor(
                         if (event.participant === room.localParticipant) notifyLocalVideoChanged()
                         else (event.participant as? RemoteParticipant)?.let { p -> eventHandler?.onUserMediaChanged(userFor(p), p.isCameraEnabled(), p.isMicrophoneEnabled()) }
                     is RoomEvent.LocalTrackSubscribed -> if (event.publication.track is VideoTrack) notifyLocalVideoChanged()
-                    is RoomEvent.Reconnecting -> { debug("reconnecting"); rosterFrozen = true; Diagnostics.reconnecting(); eventHandler?.onReconnecting() }
+                    is RoomEvent.Reconnecting -> {
+                        debug("reconnecting"); rosterFrozen = true; Diagnostics.reconnecting()
+                        setConnectionState(AppConnectionState.RECONNECTING, AppConnectionReason.NETWORK_LOST)
+                        eventHandler?.onReconnecting()
+                    }
                     is RoomEvent.Reconnected -> {
                         debug("reconnected")
                         rosterFrozen = false
                         resyncAfterReconnect()
+                        setConnectionState(AppConnectionState.CONNECTED, AppConnectionReason.NETWORK_RESTORED)
                         eventHandler?.onReconnected()
                         eventHandler?.onUsersResynced(users.values.toList())
                     }
@@ -2310,7 +2379,9 @@ class AppEngine private constructor(
                         // still in the channel, so nobody is reported as left.
                         // The roster is cleared so remoteUsers is not stale.
                         rosterFrozen = false
+                        cancelPendingLeaves()
                         users.clear()
+                        setConnectionState(AppConnectionState.DISCONNECTED, ConnectionReasons.fromEngineName(event.reason?.name))
                         eventHandler?.onDisconnected(event.reason?.name)
                     }
                     is RoomEvent.DataReceived -> if (CodecHealth.isInternalTopic(event.topic)) {

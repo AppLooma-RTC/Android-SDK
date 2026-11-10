@@ -361,6 +361,14 @@ data class AppEngineOptions @JvmOverloads constructor(
      */
     val audienceLatency: AppAudienceLatency = AppAudienceLatency.ULTRA_LOW,
     /**
+     * How long a remote user whose connection dropped is kept in the roster as
+     * [AppUserState.RECONNECTING] before [AppEventHandler.onUserLeft] reports
+     * them as [AppLeaveReason.DROPPED]. If they come back within this time you
+     * get [AppEventHandler.onUserStateChanged] ACTIVE instead of a leave and a
+     * join. 0 reports the leave at once. Since 0.9.0.
+     */
+    val remoteLeaveGraceMs: Long = 20_000,
+    /**
      * Experimental, for local testing only; do not ship with this on. Allows
      * hardware H.264 on Codec2 encoders (MediaTek, newer Qualcomm) that are
      * otherwise kept on VP8, using the SDK's tuned encoder settings and
@@ -422,6 +430,18 @@ data class AppNetworkTestResult(
 
 /** Milestones on the way to seeing a remote picture, each with elapsed ms since joinChannel. */
 enum class AppConnectionStage { CONNECTED, FIRST_REMOTE_VIDEO_FRAME }
+
+/** A remote user's presence: in the channel, or dropped and still inside [AppEngineOptions.remoteLeaveGraceMs]. */
+enum class AppUserState { ACTIVE, RECONNECTING }
+
+/** Your own connection, as one state machine. See [AppEventHandler.onConnectionStateChanged]. */
+enum class AppConnectionState { CONNECTING, CONNECTED, RECONNECTING, DISCONNECTED, FAILED }
+
+/** Why [AppConnectionState] changed. */
+enum class AppConnectionReason {
+    JOIN_SUCCESS, JOIN_FAILED, NETWORK_LOST, NETWORK_RESTORED, TOKEN_EXPIRED, KICKED,
+    DUPLICATE_IDENTITY, ROOM_CLOSED, LEAVE_CHANNEL, UNKNOWN,
+}
 
 /**
  * Per-remote-user media health, delivered every two seconds while joined.
@@ -545,7 +565,16 @@ data class AppStoredMessage(
 data class AppHistoryPage(val messages: List<AppStoredMessage>, val nextBefore: Date?)
 
 /** A remote user in the channel. */
-class AppRemoteUser internal constructor(private val p: RemoteParticipant) {
+class AppRemoteUser internal constructor(p: RemoteParticipant) {
+    /** Rebound when the same identity comes back after a drop (new transport participant, same user). */
+    internal var p: RemoteParticipant = p
+        private set
+    internal fun rebind(participant: RemoteParticipant) { p = participant }
+
+    /** ACTIVE, or RECONNECTING while their dropped connection is inside the grace period. */
+    @Volatile var state: AppUserState = AppUserState.ACTIVE
+        internal set
+
     val uid: String get() = p.identity?.value ?: ""
     val displayName: String? get() = p.name
     val isSpeaking: Boolean get() = p.isSpeaking
@@ -667,6 +696,21 @@ abstract class AppEventHandler {
      * camera and microphone off.
      */
     open fun onUserRoleChanged(user: AppRemoteUser, oldRole: AppRole, newRole: AppRole) {}
+    /**
+     * A remote user's connection dropped (RECONNECTING) or came back (ACTIVE)
+     * within [AppEngineOptions.remoteLeaveGraceMs]. Show "weak network" on
+     * their tile; the stream is not over. If they do not come back,
+     * [onUserLeft] follows with [AppLeaveReason.DROPPED].
+     */
+    open fun onUserStateChanged(user: AppRemoteUser, state: AppUserState) {}
+    /**
+     * Your own connection as one state machine: CONNECTING on joinChannel,
+     * CONNECTED when in, RECONNECTING/CONNECTED around a drop, DISCONNECTED
+     * when it ended, FAILED when a join did not succeed. `reason` says why:
+     * TOKEN_EXPIRED means mint a new token, KICKED means your server removed
+     * you, NETWORK_LOST means show "Reconnecting…".
+     */
+    open fun onConnectionStateChanged(state: AppConnectionState, reason: AppConnectionReason) {}
     /**
      * Someone sent a message with sendMessage(). `text` and `data` are exactly
      * what the sender passed; values inside `data` arrive as JSON types

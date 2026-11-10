@@ -28,3 +28,23 @@ class LeaveReasonsTest {
         assertEquals(emptyList<String>(), d.added)
     }
 }
+
+class ConnectionReasonsTest {
+    @Test fun holdsOnlyRecoverableLeaves() {
+        assertEquals(true, LeaveReasons.holdsForReturn(AppLeaveReason.DROPPED))
+        assertEquals(true, LeaveReasons.holdsForReturn(AppLeaveReason.UNKNOWN))
+        assertEquals(true, LeaveReasons.holdsForReturn(AppLeaveReason.DUPLICATE_IDENTITY))
+        assertEquals(false, LeaveReasons.holdsForReturn(AppLeaveReason.QUIT))
+        assertEquals(false, LeaveReasons.holdsForReturn(AppLeaveReason.KICKED))
+        assertEquals(false, LeaveReasons.holdsForReturn(AppLeaveReason.ROOM_CLOSED))
+    }
+
+    @Test fun mapsOwnDisconnectReasons() {
+        assertEquals(AppConnectionReason.LEAVE_CHANNEL, ConnectionReasons.fromEngineName("CLIENT_INITIATED"))
+        assertEquals(AppConnectionReason.KICKED, ConnectionReasons.fromEngineName("PARTICIPANT_REMOVED"))
+        assertEquals(AppConnectionReason.DUPLICATE_IDENTITY, ConnectionReasons.fromEngineName("DUPLICATE_IDENTITY"))
+        assertEquals(AppConnectionReason.ROOM_CLOSED, ConnectionReasons.fromEngineName("ROOM_DELETED"))
+        assertEquals(AppConnectionReason.NETWORK_LOST, ConnectionReasons.fromEngineName("SIGNAL_CLOSE"))
+        assertEquals(AppConnectionReason.UNKNOWN, ConnectionReasons.fromEngineName(null))
+    }
+}
