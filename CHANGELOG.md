@@ -1,5 +1,11 @@
 # Changelog
 
+## rtc-android 0.9.1 — 2026-11-11
+
+- Smart routing is tried twice with a 3 s wait each (was once, 2 s) and a final failure is logged as a warning (`AppLoomaRTC`: "Smart routing failed…"). Before, a slow route answer made the phone connect to the token's server in silence while later joiners were routed elsewhere, and one live stream ran as two rooms (Nur Live, 10 Nov). The API side no longer waits on a media server that has stopped answering.
+- `AppAudioOptions.releaseMicrophoneOnMute` (default false): with it, `enableMicrophone(false)` unpublishes and stops the microphone track instead of muting it, so the recorder closes, the phone's microphone indicator goes off and another app can record; unmuting republishes in a few hundred milliseconds. Equivalent to Agora's `enableLocalAudio(false)`. While the SDK's music player is playing, mute keeps the capture open either way.
+- Viewer "no picture" reports on a hardware encoder that is producing frames used to be treated as the viewer's network and never triggered a codec fallback. Three such reports within three minutes now count towards the one automatic fallback, like reports on a silent encoder (seen on Samsung SM-A217F hardware H.264: seven reports in three minutes, viewers black, no fallback).
+
 ## rtc-android 0.9.0 · uikit-android 0.5.0 — 2026-11-11
 
 - `onUserStateChanged(user, AppUserState)`: a remote user whose connection dropped is reported RECONNECTING and kept in the roster for `AppEngineOptions.remoteLeaveGraceMs` (default 20 s). If they come back in time you get ACTIVE, with no `onUserLeft`/`onUserJoined` pair; if not, `onUserLeft(user, DROPPED)` follows. `AppRemoteUser.state` carries the same value. Set the grace to 0 for the old behaviour.

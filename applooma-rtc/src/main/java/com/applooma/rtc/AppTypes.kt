@@ -209,6 +209,18 @@ data class AppAudioOptions @JvmOverloads constructor(
      * server. Since 0.4.25.
      */
     val audioKeepAlive: Boolean = true,
+    /**
+     * What `enableMicrophone(false)` does with the recorder. Off (default):
+     * the track is muted and the microphone stays open, so unmuting is
+     * instant. On: the microphone track is unpublished and stopped, which
+     * closes the recorder: the phone's microphone indicator goes off and
+     * another app (a recorder, a call) can use it while you are muted;
+     * unmuting republishes in a few hundred milliseconds. The same as
+     * Agora's `enableLocalAudio(false)`. While the SDK's music player is
+     * playing, mute keeps the capture open either way so the music goes on.
+     * Since 0.9.1.
+     */
+    val releaseMicrophoneOnMute: Boolean = false,
 ) {
     /** The mode in force once [noiseSuppression] and [noiseSuppressionMode] are combined. */
     val effectiveNoiseSuppression: AppNoiseSuppression

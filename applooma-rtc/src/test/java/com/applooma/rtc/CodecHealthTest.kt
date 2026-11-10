@@ -117,6 +117,17 @@ class ViewerReportRuleTest {
         assertEquals(ViewerReportAction.VIEWER_STALL, ViewerReportRule.decide(true, false, true))
     }
 
+    @Test fun persistentStallsOnAProducingEncoderCount() {
+        assertEquals(ViewerReportAction.COUNT, ViewerReportRule.decide(softwareEncoder = false, singleLayer = true, encoderProducing = true, persistent = true))
+        // Still never on the already-safe path.
+        assertEquals(ViewerReportAction.IGNORE_ALREADY_SAFE, ViewerReportRule.decide(true, true, true, persistent = true))
+        // Three reports inside the window make them persistent, two do not.
+        val r = ViewerReports(windowMs = 180_000, needed = 3)
+        assertFalse(r.onReport(0, "a", 2))
+        assertFalse(r.onReport(60_000, "b", 2))
+        assertTrue(r.onReport(120_000, "c", 2))
+    }
+
     @Test fun silentEncoderCountsTowardsFallback() {
         assertEquals(ViewerReportAction.COUNT, ViewerReportRule.decide(false, false, false))
         assertEquals(ViewerReportAction.COUNT, ViewerReportRule.decide(true, false, false))

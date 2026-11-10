@@ -320,7 +320,7 @@ class AppEngine private constructor(
         private set
 
     companion object {
-        private const val TAG = "AppLoomaRTC"
+        internal const val TAG = "AppLoomaRTC"
         private const val JOIN_LOOP_WINDOW_MS = 60_000L
         private const val JOIN_LOOP_LIMIT = 10
         /** The engine that joined last in this process, to spot two engines joining at once. */
@@ -1058,7 +1058,7 @@ class AppEngine private constructor(
             if (!room.localParticipant.isMicrophoneEnabled()) room.localParticipant.setMicrophoneEnabled(true)
         } else {
             mixer.micMuted = false
-            room.localParticipant.setMicrophoneEnabled(false)
+            muteMicrophoneTrack()
         }
     }
 
@@ -1068,7 +1068,26 @@ class AppEngine private constructor(
 
     /** Music ended or was stopped: a logically muted microphone now really mutes. */
     private fun afterMusicEnded() {
-        if (!micWanted) launchSafely { mixer.micMuted = false; room.localParticipant.setMicrophoneEnabled(false) }
+        if (!micWanted) launchSafely { mixer.micMuted = false; muteMicrophoneTrack() }
+    }
+
+    /**
+     * A real mute. By default the microphone track is muted and the capture
+     * stays open, so unmuting is instant. With
+     * [AppAudioOptions.releaseMicrophoneOnMute] the track is unpublished and
+     * stopped instead, which closes the recorder: the phone's microphone
+     * indicator goes off and other apps can record. Unmuting then republishes
+     * (a few hundred milliseconds).
+     */
+    private suspend fun muteMicrophoneTrack() {
+        val lp = room.localParticipant
+        if (!options.audio.releaseMicrophoneOnMute) { lp.setMicrophoneEnabled(false); return }
+        val track = lp.audioTrackPublications.firstNotNullOfOrNull { (pub, t) ->
+            (t as? com.applooma.rtc.transport.room.track.LocalAudioTrack)?.takeIf { pub.source == com.applooma.rtc.transport.room.track.Track.Source.MICROPHONE }
+        }
+        if (track == null) { lp.setMicrophoneEnabled(false); return }
+        lp.unpublishTrack(track, stopOnUnpublish = true)
+        debug("microphone released (releaseMicrophoneOnMute)")
     }
 
     /** Flip between the front and back cameras. Does nothing until the camera is on. */
@@ -1214,6 +1233,8 @@ class AppEngine private constructor(
 
     private val encoderWatchdog = EncoderWatchdog()
     private val viewerReports = ViewerReports()
+    /** Stall reports while our encoder is producing: three in three minutes make them persistent. */
+    internal val stallReports = ViewerReports(windowMs = 180_000, needed = 3)
     private val fallbackGate = FallbackGate()
     private val cameraRestarts = CameraRestartBudget()
     private var watchedRtc: Any? = null
@@ -1232,7 +1253,7 @@ class AppEngine private constructor(
     init { AppLoomaVideoEncoderFactory.addFailureListener(encoderFailureListener) }
 
     private fun resetCodecRecovery() {
-        fallbackGate.reset(); cameraRestarts.reset(); viewerReports.clear(); encoderWatchdog.pause(); watchedRtc = null
+        fallbackGate.reset(); cameraRestarts.reset(); viewerReports.clear(); stallReports.clear(); encoderWatchdog.pause(); watchedRtc = null
         noFrameSince.clear(); lastReportSent.clear(); remoteCodec.clear()
         reportedOutcomes.clear(); healthySince = -1L
         videoLoadReset()
@@ -1396,8 +1417,10 @@ class AppEngine private constructor(
         val software = AppLoomaVideoEncoderFactory.findHardwareEncoder(mimeOfCodec(codec)) == null
         val single = !resolveVideo(videoConfig).simulcast
         val producing = encoderWatchdog.producedRecently(now)
-        val action = ViewerReportRule.decide(software, single, producing)
-        log("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")}) encoder=${if (software) "sw" else "hw"} single=$single producing=$producing -> $action")
+        // Three stall reports within three minutes (never the 1:1 shortcut) count as persistent.
+        val persistent = producing && stallReports.onReport(now, viewer, 2)
+        val action = ViewerReportRule.decide(software, single, producing, persistent)
+        log("viewer uid=$viewer reports no picture (codec=${msg.optString("codec")}) encoder=${if (software) "sw" else "hw"} single=$single producing=$producing persistent=$persistent -> $action")
         Diagnostics.problem(DiagPolicy.PROBLEM_NO_FRAMES)
         if (action != ViewerReportAction.COUNT) {
             // Our encoder is fine, or already on the safest path: network or viewer side. No republish.

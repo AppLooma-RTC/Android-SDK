@@ -124,9 +124,17 @@ internal enum class ViewerReportAction {
 }
 
 internal object ViewerReportRule {
-    fun decide(softwareEncoder: Boolean, singleLayer: Boolean, encoderProducing: Boolean): ViewerReportAction = when {
+    /**
+     * [persistent]: viewers keep reporting no picture although our encoder is
+     * producing. One or two such reports are a viewer's network. A stream of
+     * them (see [AppEngine.stallReports]) means the frames leave this phone
+     * but nobody can decode them, which is what a broken hardware H.264
+     * stream looks like from here (Samsung SM-A217F, 2026-11-10: seven reports
+     * in three minutes, no fallback), so they count towards one.
+     */
+    fun decide(softwareEncoder: Boolean, singleLayer: Boolean, encoderProducing: Boolean, persistent: Boolean = false): ViewerReportAction = when {
         softwareEncoder && singleLayer -> ViewerReportAction.IGNORE_ALREADY_SAFE
-        encoderProducing -> ViewerReportAction.VIEWER_STALL
+        encoderProducing && !persistent -> ViewerReportAction.VIEWER_STALL
         else -> ViewerReportAction.COUNT
     }
 }
